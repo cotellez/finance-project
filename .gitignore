@@ -1,0 +1,14 @@
+__pycache__/
+*.egg-info/
+.pytest_cache/
+dist/
+build/
+.venv/
+finance.json
+.env
+
+# Runtime data / caches
+market_cache.db
+*.db
+memory_short.json
+memory_long.json
