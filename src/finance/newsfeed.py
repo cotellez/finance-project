@@ -31,7 +31,7 @@ from typing import Dict, List, Optional
 
 import requests
 
-from finance.alpha_vantage import cache_response, get_cached_response
+from finance.cache import cache_response, get_cached_response
 from finance.logging_setup import get_logger
 
 logger = get_logger(__name__)

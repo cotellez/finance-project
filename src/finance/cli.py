@@ -16,7 +16,6 @@ from finance.memory import (
     get_short_term_memory,
     load_long_term_memory,
 )
-from finance.alpha_vantage import fetch_global_quote
 from finance.stock_data import fetch_daily
 from finance.indicators import analyze_market_data
 from finance.portfolio import (
@@ -162,18 +161,25 @@ def handle_summary(args, db_path: Path = DEFAULT_DB) -> int:
 # Market CLI handlers
 def handle_market_quote(args) -> int:
     try:
-        data = fetch_global_quote(args.symbol)
-        quote = data.get("Global Quote", {})
-        if not quote:
+        import yfinance as yf
+        info = yf.Ticker(args.symbol).info
+        if not info or "regularMarketPrice" not in info and "currentPrice" not in info and "previousClose" not in info:
             print(f"No quote found for symbol '{args.symbol}'.")
             return 1
 
-        print(f"=== Quote: {quote.get('01. symbol', args.symbol.upper())} ===")
-        print(f"Price:        ${float(quote.get('05. price', 0)):.2f}")
-        print(f"Change:       ${float(quote.get('09. change', 0)):.2f} ({quote.get('10. change percent', '0%')})")
-        print(f"Volume:       {int(quote.get('06. volume', 0)):,}")
-        print(f"Prev Close:   ${float(quote.get('08. previous close', 0)):.2f}")
-        print(f"Latest Trading Day: {quote.get('07. latest trading day', 'N/A')}")
+        price = info.get("regularMarketPrice") or info.get("currentPrice") or info.get("previousClose")
+        prev_close = info.get("previousClose") or info.get("regularMarketPreviousClose") or 0
+        change = price - prev_close if prev_close else None
+        change_pct = (change / prev_close * 100) if prev_close and change is not None else None
+
+        print(f"=== Quote: {args.symbol.upper()} ({info.get('shortName') or args.symbol.upper()}) ===")
+        print(f"Price:        ${price:.2f}")
+        if change is not None:
+            pct = f"({change_pct:+.2f}%)" if change_pct is not None else ""
+            print(f"Change:       ${change:+.2f} {pct}")
+        print(f"Volume:       {info.get('volume', 0):,}")
+        if prev_close:
+            print(f"Prev Close:   ${prev_close:.2f}")
         push_context(f"Fetched quote for {args.symbol.upper()}")
         return 0
     except Exception as e:
@@ -239,17 +245,21 @@ def handle_portfolio_summary(args) -> int:
 
         # Fetch current prices for all held symbols
         current_prices = {}
+        import yfinance as yf
+        tickers = yf.Tickers(" ".join(p["symbol"] for p in positions))
         for p in positions:
             sym = p["symbol"]
-            quote_data = fetch_global_quote(sym)
-            quote = quote_data.get("Global Quote", {})
-            price_str = quote.get("05. price")
-            if price_str:
-                current_prices[sym] = float(price_str)
+            info = tickers.tickers[sym].info
+            price = info.get("regularMarketPrice") or info.get("currentPrice") or info.get("previousClose")
+            if price:
+                current_prices[sym] = float(price)
             else:
-                # Fallback to latest adjusted daily close if global quote is missing
+                # Fallback to latest adjusted daily close if price is missing
                 df = fetch_daily(sym)
-                current_prices[sym] = float(df.iloc[-1]["adjusted_close"])
+                if not df.empty:
+                    current_prices[sym] = float(df.iloc[-1]["adjusted_close"])
+                else:
+                    print(f"Warning: No price data for {sym}, skipping.", file=sys.stderr)
 
         metrics = calculate_portfolio_metrics(positions, current_prices)
 
@@ -267,6 +277,148 @@ def handle_portfolio_summary(args) -> int:
         return 0
     except Exception as e:
         print(f"Error calculating portfolio summary: {e}", file=sys.stderr)
+        return 1
+
+
+def handle_portfolio_analyze(args) -> int:
+    try:
+        import yfinance as yf
+
+        positions = load_portfolio()
+        if not positions:
+            print("No portfolio positions recorded yet.")
+            return 0
+
+        symbols = [p["symbol"] for p in positions]
+
+        # Fetch current price + key metrics from yfinance in one batch
+        tickers = yf.Tickers(" ".join(symbols))
+        price_data = {}
+        for sym in symbols:
+            try:
+                info = tickers.tickers[sym].info
+                price_data[sym] = {
+                    "price": info.get("regularMarketPrice") or info.get("currentPrice") or info.get("previousClose"),
+                    "beta": info.get("beta") or info.get("beta3Year"),
+                    "dividend_yield": info.get("dividendYield") or info.get("yield") or 0,
+                    "expense_ratio": info.get("netExpenseRatio"),
+                    "fifty_two_week_low": info.get("fiftyTwoWeekLow"),
+                    "fifty_two_week_high": info.get("fiftyTwoWeekHigh"),
+                    "ytd_return": info.get("ytdReturn"),
+                    "name": info.get("shortName") or info.get("longName") or sym,
+                }
+            except Exception:
+                price_data[sym] = {"price": None, "beta": None, "dividend_yield": 0, "expense_ratio": None, "fifty_two_week_low": None, "fifty_two_week_high": None, "ytd_return": None, "name": sym}
+
+        # Build position rows
+        total_cost = 0.0
+        total_value = 0.0
+        weighted_beta = 0.0
+        weighted_div_yield = 0.0
+        rows = []
+
+        for p in positions:
+            sym = p["symbol"]
+            shares = p["shares"]
+            basis = p["cost_basis"]
+            cost = shares * basis
+            total_cost += cost
+
+            pd_info = price_data.get(sym, {})
+            price = pd_info.get("price")
+            if price is None:
+                print(f"Warning: No price data for {sym}, skipping.", file=sys.stderr)
+                continue
+
+            val = shares * price
+            total_value += val
+            pnl = val - cost
+            pnl_pct = (pnl / cost) * 100 if cost > 0 else 0.0
+            weight = 0.0  # computed after total_value known
+
+            beta = pd_info.get("beta")
+            div_yield = pd_info.get("dividend_yield", 0) or 0
+
+            rows.append({
+                "symbol": sym,
+                "name": pd_info.get("name", sym),
+                "shares": shares,
+                "cost_basis": basis,
+                "price": price,
+                "value": val,
+                "cost": cost,
+                "pnl": pnl,
+                "pnl_pct": pnl_pct,
+                "beta": beta,
+                "dividend_yield": div_yield,
+                "expense_ratio": pd_info.get("expense_ratio"),
+                "fifty_two_week_low": pd_info.get("fifty_two_week_low"),
+                "fifty_two_week_high": pd_info.get("fifty_two_week_high"),
+                "ytd_return": pd_info.get("ytd_return"),
+            })
+
+        if total_value == 0:
+            print("No valid price data for any holdings.")
+            return 1
+
+        total_pnl = total_value - total_cost
+        total_pnl_pct = (total_pnl / total_cost) * 100 if total_cost > 0 else 0.0
+
+        # Compute weights and weighted metrics
+        for r in rows:
+            r["weight"] = (r["value"] / total_value) * 100
+            weighted_beta += (r["weight"] / 100) * (r["beta"] or 1.0)
+            weighted_div_yield += (r["weight"] / 100) * r["dividend_yield"]
+
+        # Display
+        print("=" * 70)
+        print("  PORTFOLIO ANALYSIS")
+        print("=" * 70)
+        print()
+        print(f"  {'Symbol':<8} {'Shares':>7} {'Cost':>10} {'Price':>10} {'Value':>10} {'P&L':>12} {'P&L%':>8} {'Weight':>7}")
+        print("  " + "-" * 78)
+        for r in rows:
+            pnl_sign = "+" if r["pnl"] >= 0 else ""
+            print(f"  {r['symbol']:<8} {r['shares']:>7.2f} {r['cost']:>10.2f} {r['price']:>10.2f} {r['value']:>10.2f} {pnl_sign}{r['pnl']:>10.2f} {r['pnl_pct']:>+7.2f}% {r['weight']:>6.1f}%")
+        print("  " + "-" * 78)
+        pnl_sign = "+" if total_pnl >= 0 else ""
+        print(f"  {'TOTAL':<8} {'':>7} {total_cost:>10.2f} {'':>10} {total_value:>10.2f} {pnl_sign}{total_pnl:>10.2f} {total_pnl_pct:>+7.2f}% {'100.0':>6}%")
+        print()
+
+        # Per-position detail cards
+        print("=" * 70)
+        print("  POSITION DETAILS")
+        print("=" * 70)
+        for r in rows:
+            print()
+            print(f"  {r['symbol']} — {r['name']}")
+            print(f"  {'Beta:':<16} {r['beta'] if r['beta'] is not None else 'N/A'}")
+            print(f"  {'Dividend Yield:':<16} {r['dividend_yield']*100:.2f}%" if r['dividend_yield'] else f"  {'Dividend Yield:':<16} 0.00%")
+            if r['expense_ratio'] is not None:
+                print(f"  {'Expense Ratio:':<16} {r['expense_ratio']:.2f}%")
+            if r['fifty_two_week_low'] and r['fifty_two_week_high']:
+                print(f"  {'52-Wk Range:':<16} ${r['fifty_two_week_low']:.2f} – ${r['fifty_two_week_high']:.2f}")
+            if r['ytd_return'] is not None:
+                print(f"  {'YTD Return:':<16} {r['ytd_return']:+.2f}%")
+            print(f"  {'Weight:':<16} {r['weight']:.1f}%")
+        print()
+
+        # Portfolio-level summary
+        print("=" * 70)
+        print("  PORTFOLIO SUMMARY")
+        print("=" * 70)
+        print(f"  Total Cost Basis:    ${total_cost:,.2f}")
+        print(f"  Total Market Value:  ${total_value:,.2f}")
+        print(f"  Total Unrealized P&L: {pnl_sign}${abs(total_pnl):,.2f} ({total_pnl_pct:+.2f}%)")
+        print(f"  Holdings:            {len(rows)}")
+        print(f"  Portfolio Beta:      {weighted_beta:.3f}")
+        print(f"  Blended Div Yield:   {weighted_div_yield*100:.2f}%")
+        print()
+
+        push_context(f"Analyzed portfolio: {len(rows)} positions, value ${total_value:,.2f}, P&L {total_pnl_pct:+.2f}%")
+        return 0
+    except Exception as e:
+        print(f"Error analyzing portfolio: {e}", file=sys.stderr)
         return 1
 
 
@@ -414,7 +566,33 @@ def handle_report_generate(args) -> int:
             for t, w in opt["weights"].items():
                 print(f"    {t}: {w * 100:.2f}%")
 
-        push_context("Generated automated market briefing report")
+        # News & Sentiment section
+        msent = report.get("market_sentiment")
+        tsentiments = report.get("ticker_sentiments", [])
+        catalysts = report.get("catalysts")
+
+        print("\n--- 5. News & Sentiment ---")
+        if msent and "error" not in msent:
+            print(f"  Broad Market (RSS): score={msent.get('score', 0.0):+.3f} | label={msent.get('label', 'neutral')} | items={msent.get('items_scored', 0)}")
+        elif msent and "error" in msent:
+            print(f"  Broad Market (RSS): unavailable ({msent.get('error', 'unknown')})")
+        else:
+            print("  Broad Market (RSS): not loaded")
+
+        if tsentiments:
+            print("  Per-Ticker Sentiment:")
+            for ts in tsentiments:
+                score_str = f"{ts.get('score', 0.0):+.3f}" if ts.get("score") is not None else "N/A"
+                print(f"    {ts['symbol']}: score={score_str} | label={ts.get('label', 'neutral')} | items={ts.get('items', 0)}")
+
+        if catalysts:
+            print("  Catalysts Detected:")
+            for group, items in catalysts.items():
+                if items:
+                    titles = [it.get("title", "")[:60] for it in items[:3]]
+                    print(f"    {group.upper()} ({len(items)}): {'; '.join(titles)}")
+
+        push_context("Generated automated market briefing report with sentiment")
         return 0
     except Exception as e:
         print(f"Error generating report: {e}", file=sys.stderr)
@@ -629,6 +807,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_sum_parser = portfolio_subparsers.add_parser("summary", help="Show portfolio valuation and P&L summary")
     p_sum_parser.set_defaults(func=handle_portfolio_summary)
+
+    p_analyze_parser = portfolio_subparsers.add_parser("analyze", help="Detailed portfolio analysis with beta, yield, and risk metrics")
+    p_analyze_parser.set_defaults(func=handle_portfolio_analyze)
 
     # macro subcommand
     macro_parser = subparsers.add_parser("macro", help="Track US macroeconomic indicators (FRED)")

@@ -12,3 +12,5 @@ market_cache.db
 *.db
 memory_short.json
 memory_long.json
+portfolio.json
+paper_trading.json

@@ -38,24 +38,21 @@ finance --version
 ## 2. Setting Up API Keys
 
 ### What it is & How it's used
-The application fetches real-time market data from **Alpha Vantage** and macroeconomic indicators from **FRED (Federal Reserve Economic Data)**. For security, API keys are read strictly from environment variables and are automatically redacted from logs.
+The application fetches real-time market data from **Yahoo Finance (yfinance)** (no API key required) and macroeconomic indicators from **FRED (Federal Reserve Economic Data)**. For security, API keys are read strictly from environment variables and are automatically redacted from logs.
 
 ### Step-by-Step Instructions
-Set your API keys in your terminal session:
+Set your FRED API key in your terminal session:
 
 * **Windows (PowerShell):**
   ```powershell
-  $env:ALPHA_VANTAGE_API_KEY="your_alpha_vantage_key"
   $env:FRED_API_KEY="your_fred_key"
   ```
 * **Windows (Command Prompt):**
   ```cmd
-  set ALPHA_VANTAGE_API_KEY=your_alpha_vantage_key
   set FRED_API_KEY=your_fred_key
   ```
 * **macOS / Linux (Bash/Zsh):**
   ```bash
-  export ALPHA_VANTAGE_API_KEY="your_alpha_vantage_key"
   export FRED_API_KEY="your_fred_key"
   ```
 

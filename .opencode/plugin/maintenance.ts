@@ -11,7 +11,7 @@ import type { Plugin } from "@opencode-ai/plugin"
  */
 export default (async () => {
   const SENSITIVE_NAMES = [
-    "ALPHA_VANTAGE_API_KEY",
+    "FRED_API_KEY",
     "api_key",
     "apikey",
     "API_TOKEN",

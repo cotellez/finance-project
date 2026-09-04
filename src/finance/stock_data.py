@@ -3,10 +3,6 @@
 Provides split- and dividend-adjusted daily OHLCV data without a subscription.
 Yahoo Finance's "Adj Close" is adjusted for splits and dividends, preserving
 price continuity for backtests and technical analysis.
-
-This is the recommended data provider for the CLI/analysis layer. The Alpha
-Vantage MCP server remains available for natural-language agent access (its
-free endpoints require no subscription).
 """
 
 import yfinance as yf
@@ -80,83 +76,23 @@ def fetch_daily(symbol: str, period: str = DEFAULT_PERIOD, interval: str = DEFAU
     return df
 
 
-def _from_alpha_vantage_payload(data: dict, symbol: str) -> pd.DataFrame:
-    """Convert an Alpha Vantage TIME_SERIES_DAILY payload to the normalized schema.
-
-    Alpha Vantage's free daily endpoint is unadjusted, so adjusted_close is
-    set equal to close (best-effort approximation for fallback scenarios).
-    """
-    time_series_key = None
-    for k in data:
-        if "Time Series" in k:
-            time_series_key = k
-            break
-    if not time_series_key:
-        raise ValueError(f"No time series data in Alpha Vantage payload for {symbol}.")
-
-    rows = data[time_series_key]
-    records = []
-    for ts, vals in rows.items():
-        if not isinstance(vals, dict):
-            continue
-        try:
-            records.append(
-                {
-                    "index": pd.to_datetime(ts),
-                    "open": float(vals["1. open"]),
-                    "high": float(vals["2. high"]),
-                    "low": float(vals["3. low"]),
-                    "close": float(vals["4. close"]),
-                    "adjusted_close": float(vals["4. close"]),
-                    "volume": float(vals.get("5. volume", 0)),
-                }
-            )
-        except (KeyError, TypeError, ValueError):
-            continue
-
-    if not records:
-        return pd.DataFrame(columns=REQUIRED_COLUMNS)
-
-    df = pd.DataFrame(records).set_index("index").sort_index()
-    return df[REQUIRED_COLUMNS]
-
-
 def fetch_daily_with_fallback(
     symbol: str,
     period: str = DEFAULT_PERIOD,
     interval: str = DEFAULT_INTERVAL,
     db_path: Path = None,
 ) -> pd.DataFrame:
-    """Fetch daily OHLCV, falling back to Alpha Vantage free endpoints on failure.
+    """Fetch daily OHLCV data.
 
-    Primary source is yfinance (split/dividend-adjusted). If it returns no data,
-    raises, or is unavailable, we attempt Alpha Vantage's free TIME_SERIES_DAILY
-    endpoint (unadjusted; adjusted_close approximated as close). This provides a
-    resilience layer against Yahoo outages and intermittent rate-limits.
+    yfinance is the sole data provider. Returns an empty DataFrame if the
+    source is unavailable or returns no data so callers can handle missing
+    data explicitly rather than fail silently.
     """
     try:
         df = fetch_daily(symbol, period=period, interval=interval)
         if not df.empty:
             return df
-        logger.warning("yfinance returned no data for %s; trying Alpha Vantage fallback.", symbol)
+        logger.warning("yfinance returned no data for %s.", symbol)
     except Exception as e:
-        logger.warning("yfinance failed for %s (%s); trying Alpha Vantage fallback.", symbol, e)
-
-    if interval != "1d":
-        # Alpha Vantage free fallback only supports daily granularity.
-        logger.warning(
-            "Alpha Vantage fallback only supports daily interval, not '%s'. Returning empty.", interval
-        )
-        return pd.DataFrame(columns=REQUIRED_COLUMNS)
-
-    try:
-        from finance.alpha_vantage import query_alpha_vantage
-        data = query_alpha_vantage(
-            {"function": "TIME_SERIES_DAILY", "symbol": symbol.upper()},
-            ttl_hours=24,
-            db_path=db_path,
-        )
-        return _from_alpha_vantage_payload(data, symbol)
-    except Exception as e:
-        logger.warning("Alpha Vantage fallback failed for %s: %s", symbol, e)
-        return pd.DataFrame(columns=REQUIRED_COLUMNS)
+        logger.warning("yfinance failed for %s (%s).", symbol, e)
+    return pd.DataFrame(columns=REQUIRED_COLUMNS)

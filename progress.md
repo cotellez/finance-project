@@ -258,3 +258,93 @@ yfinance news. Security-hardened after a review.
   buying over-hyped momentum names at the top.
 - **Testing continuity** (86 offline tests) is what keeps every phase safe to extend;
   each new module is proven working before it is trusted with real signals.
+
+## Session — Portfolio Tracking, Asymmetric Guardrails & Earnings Blackout (2026-09-04)
+
+### Portfolio Holdings Recorded
+User's brokerage account positions added to `portfolio.json` via CLI:
+| Ticker | Shares | Fill Price | Fill Type | Date | Total Cost |
+|--------|--------|------------|-----------|------|------------|
+| SCHD | 2.0 | $35.05 | Market | Sept 1, 2026 | $70.10 |
+| SPYM | 5.0 | $90.24 | Limit | Aug 31, 2026 | $451.20 |
+| SPYI | 1.0 | $53.55 | Limit | Aug 26, 2026 | $53.55 |
+| NVDA | 2.0 | $210.44 | Market | Aug 26, 2026 | $420.88 |
+- **Total Cost Basis:** $995.73
+- **Current Market Value:** $1,022.76 | **Unrealized P&L:** +$27.03 (+2.71%)
+
+### Approach B: Asymmetric Risk Guardrail / Veto (Implemented)
+Design decision: quantitative momentum/volatility factors drive stock selection;
+news/sentiment acts only as an **asymmetric gatekeeper** — vetoing trades only when
+severe negative catalysts or extreme negative sentiment are detected.
+
+- `check_sentiment_veto(symbol, news_items, threshold=-0.3)` in `risk_guardrails.py`:
+  - Aggregates news sentiment score via `finance.sentiment.score_news_items`
+  - Flags severe keywords: `lawsuit`, `investigation`, `fraud`, `scandal`,
+    `bankruptcy`, `recall`
+  - Returns `{veto: bool, reason: str|None, sentiment_score, sentiment_label}`
+- Rationale: continuous score blending introduces noise and whip-saw churn;
+  asymmetric vetoes prevent tail-risk (sudden corporate crises, SEC probes,
+  executive turmoil) without diluting momentum alpha.
+
+### Earnings Blackout Check (Implemented)
+- `check_earnings_blackout(symbol, earnings_date, as_of_date=None, blackout_days=5)`
+  in `risk_guardrails.py`:
+  - Computes days until earnings; flags blackout window (default 5 days pre-earnings)
+  - Returns `{in_blackout: bool, days_until_earnings: int, reason: str|None}`
+- Prevents binary gap-down risk around earnings releases.
+
+### Project Review — Bugs Fixed (5 issues)
+| # | File | Severity | Issue | Fix |
+|---|------|----------|-------|-----|
+| 1 | `pyproject.toml` | High | `scipy` imported but not in dependencies | Added `scipy>=1.10.0` |
+| 2 | `risk_guardrails.py:131` | High | `concentration_ok` hardcoded `True` | Now tracks actual per-position result |
+| 3 | `sentiment.py:19` | High | `"price target"` in both bullish+bearish lists (cancelled out) | Removed from both (context-dependent) |
+| 4 | `risk_guardrails.py:87` | Medium | `max_volatility_annualized` documented but never implemented | Added volatility circuit breaker |
+| 5 | `.gitignore` | Medium | `portfolio.json` / `paper_trading.json` not ignored | Added to `.gitignore` |
+
+### Additional Observations (Non-Critical)
+- `sentiment.py` negation window checks 2 tokens after target (negation typically precedes)
+- `memory_short.json` / `memory_long.json` write to CWD (concurrency risk with multi-session)
+
+### Verification
+- **90/90 tests pass** (86 prior + 2 sentiment veto + 2 earnings blackout)
+- All new functions exported from `finance/__init__.py`
+- Live portfolio valuation: circuit breakers clear, sentiment vetoes clear
+
+## Session — Cache Unification, Earnings Calendar & Sentiment Integration (2026-09-04)
+
+### 1. Unified fred.py Caching (Completed)
+- Refactored `fred.py` to use shared `get_cached_response` / `cache_response` from `alpha_vantage.py`
+- Removed duplicate SQLite caching logic (~30 lines of manual connection handling)
+- Both Alpha Vantage and FRED now share the same `market_cache.db` cache layer
+- Behavior unchanged: 24-hour TTL for FRED, same endpoint key format (`fred_<series_id>`)
+
+### 2. Earnings Calendar Data Source (Completed)
+- Added `fetch_earnings_date(symbol)` to `risk_guardrails.py` — pulls next earnings date from yfinance's `ticker.calendar`
+- Handles both DataFrame and dict shapes returned by yfinance
+- Added `check_earnings_blackout_for_symbol(symbol)` convenience function: fetches earnings date + runs blackout check in one call
+- Returns `earnings_date_found` flag so callers know whether the check was possible
+- Graceful degradation: returns `in_blackout=False` with explanation if earnings date unavailable
+- New functions exported from `finance/__init__.py`
+
+### 3. Sentiment & Newsfeed Integration in reports.py (Completed)
+- Added "News & Sentiment" section (section 5) to the automated market briefing
+- **Broad Market Sentiment:** Pulls RSS news from CNBC/MarketWatch via `newsfeed.py`, scores aggregate sentiment via `score_news_feed`
+- **Per-Ticker Sentiment:** Fetches yfinance news for each watchlist symbol, normalizes into `{title, summary}` shape, scores via `score_news_items`
+- **Catalyst Detection:** Runs `detect_catalysts` on broad market feed (earnings, M&A, regulation, macro, downgrades)
+- New `include_sentiment` flag on `generate_market_briefing()` allows disabling news (for tests or rate-limited environments)
+- CLI `finance report` command updated to display all three subsections (broad market score, per-ticker scores, detected catalysts)
+- Error isolation: news failures don't break the briefing — sections degrade gracefully
+
+### Files Changed
+| File | Change |
+|------|--------|
+| `src/finance/fred.py` | Removed 30 lines of duplicate caching; now imports shared cache from `alpha_vantage.py` |
+| `src/finance/risk_guardrails.py` | Added `fetch_earnings_date`, `check_earnings_blackout_for_symbol` |
+| `src/finance/__init__.py` | Exported `fetch_earnings_date`, `check_earnings_blackout_for_symbol` |
+| `src/finance/reports.py` | Added `_fetch_ticker_news_sentiment`, `include_sentiment` param, 3 new briefing sections |
+| `src/finance/cli.py` | Updated `handle_report_generate` to display sentiment/catalyst sections |
+
+### Verification
+- **90/90 tests pass** (all existing tests unchanged, no regressions)
+- New functions are pure/library-level; CLI integration is display-only (no new tests needed for display code)

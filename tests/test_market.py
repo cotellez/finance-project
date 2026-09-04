@@ -5,7 +5,7 @@ import pandas as pd
 from unittest.mock import patch
 from finance.indicators import parse_time_series_daily, analyze_market_data, calculate_rsi, calculate_sma
 from finance.portfolio import add_position, calculate_portfolio_metrics
-from finance.alpha_vantage import query_alpha_vantage
+from finance.cache import cache_response, get_cached_response
 
 
 @pytest.fixture
@@ -64,43 +64,39 @@ def test_portfolio_missing_price_raises_error():
         calculate_portfolio_metrics(positions, current_prices)
 
 
-@patch("finance.alpha_vantage.requests.get")
-def test_alpha_vantage_caching_and_error_handling(mock_get, tmp_path):
-    import os
-    os.environ["ALPHA_VANTAGE_API_KEY"] = "TEST_KEY"
+def test_cache_roundtrip(tmp_path):
     cache_db = tmp_path / "test_cache.db"
+    key = "test:endpoint:1"
+    payload = {"foo": "bar", "n": 42}
 
-    # Mock Alpha Vantage error response
-    class MockResponse:
-        def raise_for_status(self):
-            pass
-        def json(self):
-            return {"Error Message": "Invalid API call."}
+    cache_response(key, payload, db_path=cache_db)
+    cached = get_cached_response(key, ttl_hours=12, db_path=cache_db)
 
-    mock_get.return_value = MockResponse()
-
-    params = {"function": "GLOBAL_QUOTE", "symbol": "INVALID"}
-    with pytest.raises(ValueError, match="Alpha Vantage API Error"):
-        query_alpha_vantage(params, db_path=cache_db)
+    assert cached == payload
 
 
-@patch("finance.alpha_vantage.requests.get")
-def test_alpha_vantage_information_notice_not_cached(mock_get, tmp_path):
-    import os
-    os.environ["ALPHA_VANTAGE_API_KEY"] = "TEST_KEY"
+def test_cache_ttl_expired(tmp_path):
+    import sqlite3
+    from datetime import datetime, timedelta
     cache_db = tmp_path / "test_cache.db"
+    key = "test:endpoint:2"
+    payload = {"foo": "bar"}
 
-    class MockResponse:
-        def raise_for_status(self):
-            pass
-        def json(self):
-            return {"Information": "This is a premium endpoint. Please subscribe."}
+    cache_response(key, payload, db_path=cache_db)
 
-    mock_get.return_value = MockResponse()
+    # Backdate the cache entry so it appears stale.
+    conn = sqlite3.connect(cache_db)
+    conn.execute(
+        "UPDATE api_cache SET timestamp = ? WHERE endpoint_key = ?",
+        ((datetime.now() - timedelta(hours=24)).isoformat(), key),
+    )
+    conn.commit()
+    conn.close()
 
-    params = {"function": "TIME_SERIES_DAILY", "symbol": "SPY"}
-    with pytest.raises(ValueError, match="Premium Notice"):
-        query_alpha_vantage(params, db_path=cache_db)
+    cached = get_cached_response(key, ttl_hours=12, db_path=cache_db)
+    assert cached is None
 
-    # No cache entry should have been written for the failed request
-    assert not cache_db.exists()
+
+def test_cache_missing_key(tmp_path):
+    cache_db = tmp_path / "test_cache.db"
+    assert get_cached_response("nonexistent", db_path=cache_db) is None

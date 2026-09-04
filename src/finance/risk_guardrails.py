@@ -8,6 +8,7 @@ any execution path (including autonomous agent workflows).
 
 import numpy as np
 import pandas as pd
+from datetime import date, datetime
 
 
 def calculate_atr(df: pd.DataFrame, window: int = 14) -> pd.Series:
@@ -112,15 +113,29 @@ def check_circuit_breakers(portfolio_metrics: dict, config: dict) -> dict:
     max_position_pct = config.get("max_position_pct", 25.0)
     positions = portfolio_metrics.get("positions", [])
     total_value = portfolio_metrics.get("total_value", 0.0)
+    concentration_ok = True
     for pos in positions:
         if total_value > 0:
             weight = (pos.get("current_value", 0.0) / total_value) * 100
             if weight > max_position_pct:
                 halt = True
+                concentration_ok = False
                 blocked_reasons.append(
                     f"POSITION CONCENTRATION: {pos.get('symbol')} is {weight:.1f}% of portfolio "
                     f"(limit {max_position_pct:.0f}%). Halting new concentration."
                 )
+
+    # Annualized volatility check.
+    max_volatility = config.get("max_volatility_annualized")
+    volatility_ok = True
+    if max_volatility is not None:
+        portfolio_vol = portfolio_metrics.get("total_volatility_annualized")
+        if portfolio_vol is not None and portfolio_vol > max_volatility:
+            halt = True
+            volatility_ok = False
+            blocked_reasons.append(
+                f"HIGH VOLATILITY: portfolio annualized vol is {portfolio_vol:.1f}% vs limit {max_volatility:.0f}%. Halting trading."
+            )
 
     return {
         "halt": halt,
@@ -129,7 +144,8 @@ def check_circuit_breakers(portfolio_metrics: dict, config: dict) -> dict:
         "max_position_pct_limit": max_position_pct,
         "checks": {
             "drawdown_ok": pnl_pct > -abs(max_drawdown_pct),
-            "concentration_ok": True,
+            "concentration_ok": concentration_ok,
+            "volatility_ok": volatility_ok,
         },
     }
 
@@ -146,3 +162,152 @@ def validate_position_size(notional: float, portfolio_value: float, max_position
     """Return the maximum allowed position notional given a portfolio cap."""
     cap = portfolio_value * (max_position_pct / 100.0)
     return min(notional, cap)
+
+
+def check_sentiment_veto(symbol: str, news_items: list, sentiment_threshold: float = -0.3) -> dict:
+    """Evaluate whether recent news/sentiment warrants an asymmetric veto/halt for a symbol.
+
+    Args:
+        symbol: Stock ticker symbol.
+        news_items: List of news dicts with title/summary or text.
+        sentiment_threshold: Threshold below which sentiment triggers a veto (default -0.3).
+
+    Returns:
+        dict with `veto` (bool), `reason` (str|None), and sentiment score metrics.
+    """
+    from finance.sentiment import score_news_items
+    res = score_news_items(news_items)
+    score = res.get("score", 0.0)
+    label = res.get("label", "neutral")
+    
+    veto = False
+    reason = None
+
+    if score <= sentiment_threshold:
+        veto = True
+        reason = f"SENTIMENT VETO for {symbol.upper()}: aggregate sentiment score {score:.2f} is below threshold {sentiment_threshold} (label: {label})."
+
+    # Also check for severe catalyst keywords
+    severe_keywords = {"lawsuit", "investigation", "fraud", "scandal", "bankruptcy", "recall"}
+    for item in news_items:
+        text = str(item.get("title", "")) + " " + str(item.get("summary", ""))
+        text_lower = text.lower()
+        found_kw = [kw for kw in severe_keywords if kw in text_lower]
+        if found_kw:
+            veto = True
+            reason = f"CATALYST VETO for {symbol.upper()}: severe keywords detected {found_kw} in news."
+            break
+
+    return {
+        "symbol": symbol.upper(),
+        "veto": veto,
+        "reason": reason,
+        "sentiment_score": score,
+        "sentiment_label": label,
+    }
+
+
+def check_earnings_blackout(symbol: str, earnings_date: str | date | datetime, as_of_date: str | date | datetime = None, blackout_days: int = 5) -> dict:
+    """Check whether a symbol is within an upcoming earnings blackout window.
+
+    Args:
+        symbol: Stock ticker symbol.
+        earnings_date: Upcoming earnings release date.
+        as_of_date: Reference date for comparison (defaults to today).
+        blackout_days: Number of days before earnings to trigger blackout (default 5).
+
+    Returns:
+        dict with `in_blackout` (bool), `days_until_earnings` (int), and `reason` (str|None).
+    """
+    if isinstance(earnings_date, str):
+        earn_dt = date.fromisoformat(earnings_date)
+    elif isinstance(earnings_date, datetime):
+        earn_dt = earnings_date.date()
+    else:
+        earn_dt = earnings_date
+
+    if as_of_date is None:
+        ref_dt = date.today()
+    elif isinstance(as_of_date, str):
+        ref_dt = date.fromisoformat(as_of_date)
+    elif isinstance(as_of_date, datetime):
+        ref_dt = as_of_date.date()
+    else:
+        ref_dt = as_of_date
+
+    delta = (earn_dt - ref_dt).days
+    in_blackout = 0 <= delta <= blackout_days
+    reason = None
+
+    if in_blackout:
+        reason = f"EARNINGS BLACKOUT for {symbol.upper()}: earnings scheduled on {earn_dt.isoformat()} ({delta} days away, within {blackout_days}-day window)."
+    elif delta < 0:
+        reason = f"Earnings date {earn_dt.isoformat()} has already passed ({abs(delta)} days ago)."
+
+    return {
+        "symbol": symbol.upper(),
+        "earnings_date": earn_dt.isoformat(),
+        "as_of_date": ref_dt.isoformat(),
+        "days_until_earnings": delta,
+        "in_blackout": in_blackout,
+        "reason": reason,
+    }
+
+
+def fetch_earnings_date(symbol: str) -> str | None:
+    """Fetch the next upcoming earnings date for a symbol from yfinance.
+
+    Returns the date as an ISO string (YYYY-MM-DD) or None if unavailable.
+    """
+    try:
+        import yfinance as yf
+        ticker = yf.Ticker(symbol)
+        cal = ticker.calendar
+        if cal is None:
+            return None
+        # yfinance returns calendar as dict or DataFrame; handle both shapes
+        if hasattr(cal, "iloc"):
+            # DataFrame with 'Earnings Date' column
+            if "Earnings Date" in cal.columns:
+                dt = cal["Earnings Date"].iloc[0]
+                return dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt)
+            return None
+        if isinstance(cal, dict):
+            # Dict with 'Earnings Date' key (list of dates or single date)
+            ed = cal.get("Earnings Date")
+            if not ed:
+                return None
+            if isinstance(ed, list):
+                dt = ed[0] if ed else None
+            else:
+                dt = ed
+            return dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt)
+    except Exception:
+        return None
+    return None
+
+
+def check_earnings_blackout_for_symbol(symbol: str, as_of_date: str | date | datetime = None, blackout_days: int = 5) -> dict:
+    """Convenience: fetch earnings date from yfinance and check blackout in one call.
+
+    Returns the same shape as check_earnings_blackout, with an added
+    `earnings_date_found` flag if the date was successfully retrieved.
+    """
+    earnings_date_str = fetch_earnings_date(symbol)
+    if earnings_date_str is None:
+        return {
+            "symbol": symbol.upper(),
+            "earnings_date": None,
+            "as_of_date": (date.today() if as_of_date is None else (
+                date.fromisoformat(as_of_date) if isinstance(as_of_date, str) else
+                (as_of_date.date() if isinstance(as_of_date, datetime) else as_of_date)
+            )).isoformat() if not isinstance(as_of_date, date) else as_of_date.isoformat(),
+            "days_until_earnings": None,
+            "in_blackout": False,
+            "reason": f"Could not retrieve earnings date for {symbol.upper()}. No blackout check possible.",
+            "earnings_date_found": False,
+        }
+
+    result = check_earnings_blackout(symbol, earnings_date_str, as_of_date=as_of_date, blackout_days=blackout_days)
+    result["earnings_date_found"] = True
+    return result

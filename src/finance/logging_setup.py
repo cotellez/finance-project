@@ -8,7 +8,7 @@ import sys
 # Collect secrets from environment for redaction
 def _collect_secrets() -> list:
     secrets = []
-    for var in ("ALPHA_VANTAGE_API_KEY", "FRED_API_KEY"):
+    for var in ("FRED_API_KEY",):
         val = os.environ.get(var)
         if val:
             secrets.append(val)

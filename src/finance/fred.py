@@ -1,17 +1,16 @@
-"""FRED (Federal Reserve Economic Data) API Client with SQLite caching and error handling."""
+"""FRED (Federal Reserve Economic Data) API Client with shared caching and error handling."""
 
 import os
-import sqlite3
-import json
-from datetime import datetime, timedelta
 from pathlib import Path
 import requests
+from finance.cache import get_cached_response, cache_response
 from finance.logging_setup import get_logger
 
 logger = get_logger(__name__)
 
 DEFAULT_CACHE_DB = Path("market_cache.db")
 BASE_URL = "https://api.stlouisfed.org/fred/series/observations"
+FRED_TTL_HOURS = 24
 
 
 def get_fred_api_key() -> str:
@@ -26,32 +25,16 @@ def get_fred_api_key() -> str:
     return key
 
 
-def query_fred(series_id: str, ttl_hours: int = 24, db_path: Path = DEFAULT_CACHE_DB) -> dict:
-    """Query FRED API for a series with SQLite caching and error validation."""
+def query_fred(series_id: str, ttl_hours: int = FRED_TTL_HOURS, db_path: Path = DEFAULT_CACHE_DB) -> dict:
+    """Query FRED API for a series with shared SQLite caching and error validation."""
     api_key = get_fred_api_key()
     series_id = series_id.upper()
 
-    # Check cache first
     endpoint_key = f"fred_{series_id}"
-    
-    if db_path.exists():
-        try:
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT payload, timestamp FROM api_cache WHERE endpoint_key = ?", (endpoint_key,)
-            )
-            row = cursor.fetchone()
-            conn.close()
-            if row:
-                payload_str, timestamp_str = row
-                cached_time = datetime.fromisoformat(timestamp_str)
-                if datetime.now() - cached_time < timedelta(hours=ttl_hours):
-                    return json.loads(payload_str)
-        except Exception:
-            pass
+    cached = get_cached_response(endpoint_key, ttl_hours=ttl_hours, db_path=db_path)
+    if cached is not None:
+        return cached
 
-    # Make request to FRED API
     params = {
         "series_id": series_id,
         "api_key": api_key,
@@ -66,22 +49,7 @@ def query_fred(series_id: str, ttl_hours: int = 24, db_path: Path = DEFAULT_CACH
     if "error_message" in data:
         raise ValueError(f"FRED API Error: {data['error_message']}")
 
-    # Cache response
-    try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO api_cache (endpoint_key, payload, timestamp)
-            VALUES (?, ?, ?)
-            """,
-            (endpoint_key, json.dumps(data), datetime.now().isoformat()),
-        )
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        logger.warning("Failed to cache FRED response: %s", e)
-
+    cache_response(endpoint_key, data, db_path=db_path)
     return data
 
 

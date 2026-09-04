@@ -84,3 +84,33 @@ def test_validate_position_size():
     assert validate_position_size(50_000, 100_000, 25.0) == 25_000
     # Below cap is allowed as-is.
     assert validate_position_size(10_000, 100_000, 25.0) == 10_000
+
+
+def test_check_sentiment_veto_severe_keyword():
+    from finance.risk_guardrails import check_sentiment_veto
+    news = [{"title": "Company faces SEC investigation over accounting fraud", "summary": "Shares plummet."}]
+    res = check_sentiment_veto("AAPL", news)
+    assert res["veto"] is True
+    assert "CATALYST VETO" in res["reason"]
+
+
+def test_check_sentiment_veto_normal():
+    from finance.risk_guardrails import check_sentiment_veto
+    news = [{"title": "Company beats earnings and raises guidance", "summary": "Strong growth."}]
+    res = check_sentiment_veto("AAPL", news)
+    assert res["veto"] is False
+
+
+def test_check_earnings_blackout_active():
+    from finance.risk_guardrails import check_earnings_blackout
+    res = check_earnings_blackout("NVDA", earnings_date="2026-09-05", as_of_date="2026-09-02", blackout_days=5)
+    assert res["in_blackout"] is True
+    assert res["days_until_earnings"] == 3
+    assert "EARNINGS BLACKOUT" in res["reason"]
+
+
+def test_check_earnings_blackout_inactive():
+    from finance.risk_guardrails import check_earnings_blackout
+    res = check_earnings_blackout("NVDA", earnings_date="2026-09-20", as_of_date="2026-09-02", blackout_days=5)
+    assert res["in_blackout"] is False
+    assert res["days_until_earnings"] == 18

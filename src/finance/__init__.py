@@ -1,6 +1,5 @@
 """Finance CLI package for US Stock Market tracking and investment analysis."""
 
-from finance.alpha_vantage import fetch_global_quote
 from finance.stock_data import fetch_daily, fetch_daily_with_fallback
 from finance.fred import get_latest_observation
 from finance.indicators import (
@@ -27,6 +26,10 @@ from finance.risk_guardrails import (
     check_circuit_breakers,
     calculate_var,
     validate_position_size,
+    check_sentiment_veto,
+    check_earnings_blackout,
+    fetch_earnings_date,
+    check_earnings_blackout_for_symbol,
 )
 from finance.paper_trading import paper_buy, paper_sell, paper_mark_to_market
 from finance.valuation import (

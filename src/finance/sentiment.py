@@ -9,14 +9,14 @@ import re
 
 BULLISH_TERMS = [
     "beat", "beats", "upgrade", "upgraded", "buy", "outperform", "strong buy",
-    "raise", "raised", "price target", "positive", "growth", "record", "rally",
+    "raise", "raised", "positive", "growth", "record", "rally",
     "gain", "gains", "bullish", "accumulate", "overweight", "insider buy",
     "institutional", "boost", "boosted", "milestone",
 ]
 
 BEARISH_TERMS = [
     "miss", "misses", "downgrade", "downgraded", "sell", "underperform",
-    "cut", "price target", "negative", "decline", "drop", "falls", "plunge",
+    "cut", "negative", "decline", "drop", "falls", "plunge",
     "loss", "losses", "bearish", "reduce", "underweight", "insider sell",
     "lawsuit", "investigation", "fraud", "weak", "warning", "layoff",
 ]

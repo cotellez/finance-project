@@ -57,30 +57,6 @@ def test_fetch_daily_missing_columns_raises(mock_yf):
 
 
 @patch("finance.stock_data.fetch_daily")
-@patch("finance.alpha_vantage.query_alpha_vantage")
-def test_fallback_uses_alpha_vantage_when_yfinance_empty(mock_av, mock_fetch):
-    # yfinance returns empty, so fallback should hit Alpha Vantage.
-    mock_fetch.return_value = pd.DataFrame(columns=REQUIRED_COLUMNS)
-
-    av_payload = {
-        "Time Series (Daily)": {
-            "2024-01-03": {"1. open": "100", "2. high": "102", "3. low": "99",
-                            "4. close": "101", "5. volume": "1000000"},
-            "2024-01-02": {"1. open": "99", "2. high": "100", "3. low": "98",
-                            "4. close": "99", "5. volume": "900000"},
-        }
-    }
-    mock_av.return_value = av_payload
-
-    result = fetch_daily_with_fallback("SPY")
-    mock_av.assert_called_once()
-    assert list(result.columns) == REQUIRED_COLUMNS
-    # Data should be sorted ascending.
-    assert result.index.is_monotonic_increasing
-    assert len(result) == 2
-
-
-@patch("finance.stock_data.fetch_daily")
 def test_fallback_returns_yfinance_when_available(mock_fetch):
     good = _make_yf_df()
     mock_fetch.return_value = good
@@ -88,3 +64,23 @@ def test_fallback_returns_yfinance_when_available(mock_fetch):
     result = fetch_daily_with_fallback("SPY")
     assert len(result) == 60
     mock_fetch.assert_called_once()
+
+
+@patch("finance.stock_data.fetch_daily")
+def test_fallback_returns_empty_when_yfinance_empty(mock_fetch):
+    # yfinance returns empty; no fallback provider, so return empty DataFrame.
+    mock_fetch.return_value = pd.DataFrame(columns=REQUIRED_COLUMNS)
+
+    result = fetch_daily_with_fallback("SPY")
+    assert result.empty
+    assert list(result.columns) == REQUIRED_COLUMNS
+    mock_fetch.assert_called_once()
+
+
+@patch("finance.stock_data.fetch_daily")
+def test_fallback_returns_empty_when_yfinance_raises(mock_fetch):
+    mock_fetch.side_effect = RuntimeError("network down")
+
+    result = fetch_daily_with_fallback("SPY")
+    assert result.empty
+    assert list(result.columns) == REQUIRED_COLUMNS
