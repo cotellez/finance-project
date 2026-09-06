@@ -3,7 +3,7 @@
 import pytest
 import pandas as pd
 from unittest.mock import patch
-from finance.indicators import parse_time_series_daily, analyze_market_data, calculate_rsi, calculate_sma
+from finance.indicators import parse_time_series_daily, analyze_market_data, calculate_rsi, calculate_sma, calculate_clv
 from finance.portfolio import add_position, calculate_portfolio_metrics
 from finance.cache import cache_response, get_cached_response
 
@@ -100,3 +100,47 @@ def test_cache_ttl_expired(tmp_path):
 def test_cache_missing_key(tmp_path):
     cache_db = tmp_path / "test_cache.db"
     assert get_cached_response("nonexistent", db_path=cache_db) is None
+
+
+def _clv_df():
+    # 5 sessions: close-at-high (+1), close-at-low (-1), mid (+0), flat (NaN), and a normal day.
+    return pd.DataFrame(
+        {
+            "high": [10.0, 10.0, 10.0, 10.0, 100.0],
+            "low": [8.0, 8.0, 8.0, 10.0, 90.0],
+            "close": [10.0, 8.0, 9.0, 10.0, 95.0],
+        },
+        index=pd.date_range("2026-09-01", periods=5),
+    )
+
+
+def test_calculate_clv_bounds():
+    clv = calculate_clv(_clv_df())
+    values = list(clv)
+    assert values[0] == pytest.approx(1.0)
+    assert values[1] == pytest.approx(0.0)
+    assert values[2] == pytest.approx(0.5)
+    assert pd.isna(values[3])  # flat session (high == low) -> NaN, never a misleading 0
+    assert values[4] == pytest.approx(0.5)
+    assert clv.isna().sum() == 1
+
+
+def test_calculate_clv_range():
+    rng = pd.date_range("2026-09-01", periods=20)
+    df = pd.DataFrame(
+        {
+            "high": [100.0 + i for i in range(20)],
+            "low": [90.0 + i for i in range(20)],
+            "close": [95.0 + i for i in range(20)],
+        },
+        index=rng,
+    )
+    clv = calculate_clv(df)
+    assert ((clv >= 0) & (clv <= 1)).all()
+
+
+def test_analyze_market_data_includes_clv(sample_av_response):
+    df = parse_time_series_daily(sample_av_response)
+    metrics = analyze_market_data(df)
+    assert "clv" in metrics
+    assert metrics["clv"] is not None and 0 <= metrics["clv"] <= 1

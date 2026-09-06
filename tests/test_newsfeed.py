@@ -102,12 +102,16 @@ def test_normalize_url_allowlist():
     # Valid whitelisted host
     assert _normalize_url("https://www.cnbc.com/id/10001147/device/rss/rss.html")
     assert _normalize_url("https://feeds.marketwatch.com/marketwatch/topstories/")
+    # Newer whitelisted sources
+    assert _normalize_url("https://feeds.finance.yahoo.com/rss/2.0/headline?s=^GSPC&region=US&lang=en-US")
+    assert _normalize_url("https://www.investing.com/rss/news.rss")
     # Rejects http (not https)
     assert _normalize_url("http://www.cnbc.com/id/10001147/device/rss/rss.html") is None
     # Rejects non-whitelisted host (SSRF)
     assert _normalize_url("https://169.254.169.254/latest/meta-data") is None
     assert _normalize_url("https://evil.com/feed") is None
     assert _normalize_url("https://localhost:8080/feed") is None
+    assert _normalize_url("https://feeds.otherdomainyahoo.com/x") is None
 
 
 def test_fetch_rss_feed_success(monkeypatch):
@@ -170,6 +174,38 @@ def test_fetch_financial_news_partial_on_failure(monkeypatch):
     out = fetch_financial_news(sources=("cnbc", "marketwatch"), retries=0)
     assert out["status"] == "partial"
     assert len(out["items"]) >= 2
+
+
+def test_fetch_financial_news_default_sources_include_new_publications(monkeypatch):
+    urls = []
+
+    def fake_get(url, *a, **k):
+        urls.append(url)
+        return FakeResponse(SAMPLE_RSS)
+
+    monkeypatch.setattr("finance.newsfeed.requests.get", fake_get)
+    out = fetch_financial_news(limit=50)
+    joined = " ".join(urls)
+    assert "feeds.finance.yahoo.com" in joined
+    assert "investing.com" in joined
+    assert out["status"] == "ok"
+    assert len(out["items"]) >= 2
+
+
+def test_fetch_financial_news_interleaves_sources(monkeypatch):
+    # CNBC floods 3 items per feed across 5 feeds; Yahoo returns a single item.
+    # Round-robin must surface the Yahoo item instead of CNBC drowning it out.
+    c = b'<rss><channel><item><title>CNBC market update</title></item><item><title>CNBC tech news</title></item><item><title>CNBC earnings recap</title></item></channel></rss>'
+    y = b'<rss><channel><item><title>Yahoo market wrap</title></item></channel></rss>'
+
+    def fake_get(url, *a, **k):
+        return FakeResponse(c if "cnbc" in url else y)
+
+    monkeypatch.setattr("finance.newsfeed.requests.get", fake_get)
+    out = fetch_financial_news(sources=("cnbc", "yahoo"), limit=6)
+    titles = [it["title"] for it in out["items"]]
+    # global dedup: 3 CNBC + 1 Yahoo
+    assert titles == ["CNBC market update", "Yahoo market wrap", "CNBC tech news", "CNBC earnings recap"]
 
 
 def test_score_news_feed(monkeypatch):

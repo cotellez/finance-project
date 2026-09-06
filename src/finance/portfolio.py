@@ -1,59 +1,109 @@
 """Portfolio tracking, performance valuation, and asset allocation optimization."""
 
 import json
+import math
 from pathlib import Path
 import pandas as pd
 import numpy as np
+from finance.jsonstore import (
+    PROJECT_ROOT,
+    FileLock,
+    atomic_write_json,
+    resolve_path,
+)
 
-DEFAULT_PORTFOLIO_DB = Path("portfolio.json")
+DEFAULT_PORTFOLIO_DB = PROJECT_ROOT / "portfolio.json"
 
 
-def load_portfolio(db_path: Path = DEFAULT_PORTFOLIO_DB) -> list:
-    """Load portfolio positions from JSON file."""
+def load_portfolio(db_path: Path | None = None) -> list:
+    """Load and schema-validate portfolio positions from JSON file."""
+    db_path = resolve_path(db_path, DEFAULT_PORTFOLIO_DB)
     if not db_path.exists():
         return []
     try:
         with open(db_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-            return data if isinstance(data, list) else []
-    except json.JSONDecodeError:
-        return []
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Portfolio database '{db_path}' is corrupted (invalid JSON): {e}") from e
+    if not isinstance(data, list):
+        raise ValueError(f"Portfolio database '{db_path}' must contain a JSON list of positions.")
+    for p in data:
+        if not isinstance(p, dict):
+            raise ValueError(f"Portfolio database '{db_path}' contains a non-object position.")
+        if not isinstance(p.get("symbol"), str) or not p["symbol"].strip():
+            raise ValueError(f"Portfolio database '{db_path}' contains a position with an invalid 'symbol'.")
+        shares = p.get("shares")
+        if not isinstance(shares, (int, float)) or not math.isfinite(float(shares)) or float(shares) <= 0:
+            raise ValueError(f"Portfolio database '{db_path}' contains a position with invalid 'shares': {shares!r}.")
+        basis = p.get("cost_basis")
+        if not isinstance(basis, (int, float)) or not math.isfinite(float(basis)) or float(basis) < 0:
+            raise ValueError(f"Portfolio database '{db_path}' contains a position with invalid 'cost_basis': {basis!r}.")
+    return data
 
 
-def save_portfolio(positions: list, db_path: Path = DEFAULT_PORTFOLIO_DB) -> None:
-    """Save portfolio positions to JSON file."""
-    with open(db_path, "w", encoding="utf-8") as f:
-        json.dump(positions, f, indent=2)
+def save_portfolio(
+    positions: list,
+    db_path: Path | None = None,
+    *,
+    audit: bool = False,
+    audit_action: str = "portfolio_write",
+    audit_detail: str = "",
+) -> None:
+    """Save portfolio positions to JSON file (atomic write)."""
+    db_path = resolve_path(db_path, DEFAULT_PORTFOLIO_DB)
+    atomic_write_json(
+        db_path,
+        positions,
+        audit=audit,
+        audit_action=audit_action,
+        audit_detail=audit_detail,
+    )
 
 
-def add_position(symbol: str, shares: float, cost_basis: float, db_path: Path = DEFAULT_PORTFOLIO_DB) -> dict:
+def add_position(symbol: str, shares: float, cost_basis: float, db_path: Path | None = None) -> dict:
     """Add or update a stock position in the portfolio."""
-    if shares <= 0:
-        raise ValueError("Shares must be greater than zero.")
-    if cost_basis < 0:
-        raise ValueError("Cost basis cannot be negative.")
+    db_path = resolve_path(db_path, DEFAULT_PORTFOLIO_DB)
+    try:
+        shares = float(shares)
+        cost_basis = float(cost_basis)
+    except (TypeError, ValueError):
+        raise ValueError("Shares and cost basis must be numbers.")
+    if not math.isfinite(shares) or shares <= 0:
+        raise ValueError("Shares must be a finite number greater than zero.")
+    if not math.isfinite(cost_basis) or cost_basis < 0:
+        raise ValueError("Cost basis must be a finite, non-negative number.")
+    if not isinstance(symbol, str) or not symbol.strip():
+        raise ValueError("Symbol must be a non-empty string.")
 
-    positions = load_portfolio(db_path)
     symbol = symbol.upper()
 
-    # Check if symbol already exists
-    existing = next((p for p in positions if p["symbol"] == symbol), None)
-    if existing:
-        # Average up/down cost basis
-        total_shares = existing["shares"] + shares
-        total_cost = (existing["shares"] * existing["cost_basis"]) + (shares * cost_basis)
-        existing["shares"] = total_shares
-        existing["cost_basis"] = round(total_cost / total_shares, 2)
-        pos = existing
-    else:
-        pos = {
-            "symbol": symbol,
-            "shares": float(shares),
-            "cost_basis": round(float(cost_basis), 2),
-        }
-        positions.append(pos)
+    with FileLock(db_path):
+        positions = load_portfolio(db_path)
 
-    save_portfolio(positions, db_path)
+        # Check if symbol already exists
+        existing = next((p for p in positions if p["symbol"] == symbol), None)
+        if existing:
+            # Average up/down cost basis
+            total_shares = existing["shares"] + shares
+            total_cost = (existing["shares"] * existing["cost_basis"]) + (shares * cost_basis)
+            existing["shares"] = total_shares
+            existing["cost_basis"] = round(total_cost / total_shares, 2)
+            pos = existing
+        else:
+            pos = {
+                "symbol": symbol,
+                "shares": shares,
+                "cost_basis": round(cost_basis, 2),
+            }
+            positions.append(pos)
+
+        save_portfolio(
+            positions,
+            db_path,
+            audit=True,
+            audit_action="portfolio_position",
+            audit_detail=f"{symbol} {shares} shares @ ${cost_basis:.2f}",
+        )
     return pos
 
 

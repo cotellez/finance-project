@@ -64,9 +64,21 @@ FEEDS: Dict[str, Dict[str, str]] = {
         "marketpulse": "https://feeds.marketwatch.com/marketwatch/marketpulse/",
         "bulletins": "https://feeds.marketwatch.com/marketwatch/bulletins/",
     },
+    "yahoo": {
+        "market": "https://feeds.finance.yahoo.com/rss/2.0/headline?s=^GSPC,^DJI,^IXIC&region=US&lang=en-US",
+    },
+    "investing": {
+        "topstories": "https://www.investing.com/rss/news.rss",
+        "stocks": "https://www.investing.com/rss/news_25.rss",
+    },
 }
 
-_ALLOWED_HOSTS = ("www.cnbc.com", "feeds.marketwatch.com")
+_ALLOWED_HOSTS = (
+    "www.cnbc.com",
+    "feeds.marketwatch.com",
+    "feeds.finance.yahoo.com",
+    "www.investing.com",
+)
 
 # Keywords for basic catalyst detection (data signals only, not rules for action).
 CATALYST_KEYWORDS = {
@@ -234,7 +246,7 @@ def _envelope(ok: bool, items: List[Dict], error: Optional[str], source: Optiona
 
 
 def fetch_financial_news(
-    sources: tuple = ("cnbc", "marketwatch"),
+    sources: tuple = ("cnbc", "marketwatch", "yahoo", "investing"),
     sections: Optional[Dict[str, List[str]]] = None,
     limit: int = 50,
     cache_db: Path = DEFAULT_CACHE_DB,
@@ -290,15 +302,36 @@ def fetch_financial_news(
                 }
             )
 
-    # Dedup by (normalized title + source) preserving earliest.
+    # Dedup by normalized title GLOBALLY (across all sources): a story syndicated
+    # by both CNBC and MarketWatch is one piece of information, not two.
     seen = set()
     unique: List[Dict] = []
     for it in items:
-        key = (re.sub(r"\s+", " ", it["title"].lower()).strip(), it.get("source"))
-        if key in seen:
+        key = re.sub(r"\s+", " ", it["title"].lower()).strip()
+        if not key or key in seen:
             continue
         seen.add(key)
         unique.append(it)
+
+    # Interleave round-robin by source so no single publication dominates the
+    # truncated output (otherwise CNBC's earlier feeds crowd out every other
+    # source when limit < total items).
+    by_source: Dict[str, List[Dict]] = {}
+    for it in unique:
+        by_source.setdefault(it.get("source") or "unknown", []).append(it)
+    buckets = [by_source[s] for s in by_source if by_source[s]]
+
+    trunk: List[Dict] = []
+    i = 0
+    while len(trunk) < limit:
+        progressed = False
+        for b in buckets:
+            if i < len(b) and len(trunk) < limit:
+                trunk.append(b[i])
+                progressed = True
+        if not progressed:
+            break
+        i += 1
 
     if total_ok == 0:
         status = "failed"
@@ -307,7 +340,7 @@ def fetch_financial_news(
     else:
         status = "ok"
 
-    return {"items": unique[:limit], "sources": source_status, "status": status}
+    return {"items": trunk, "sources": source_status, "status": status}
 
 
 def score_news_feed(items: List[Dict]) -> Dict:

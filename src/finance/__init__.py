@@ -7,6 +7,7 @@ from finance.indicators import (
     calculate_ema,
     calculate_rsi,
     calculate_volatility,
+    calculate_clv,
     analyze_market_data,
 )
 from finance.portfolio import add_position, calculate_portfolio_metrics

@@ -14,3 +14,8 @@ memory_short.json
 memory_long.json
 portfolio.json
 paper_trading.json
+
+# Atomic-write temp files, lock files, audit trail
+*.tmp
+*.lock
+data_audit.jsonl

@@ -72,6 +72,29 @@ def calculate_volatility(df: pd.DataFrame, window: int = 20, price_col: str = "a
     return log_returns.rolling(window=window).std() * np.sqrt(252)
 
 
+def calculate_clv(df: pd.DataFrame, high_col: str = "high", low_col: str = "low", close_col: str = "close") -> pd.Series:
+    """Calculate Close Location Value (CLV), a wick/buying-pressure indicator.
+
+    CLV measures where the close sits within the day's high-low range,
+    revealing intraday bid/ask pressure and wick rejection:
+        CLV = (close - low) / (high - low)
+
+    Interpretation (range [0, 1]):
+      - CLV ≈ 1  → close at the day's high: strong buying pressure
+                   (long lower wick / rejection of lows).
+      - CLV ≈ 0  → close at the day's low: strong selling pressure
+                   (long upper wick / rejection of highs).
+      - CLV ≈ ~0.5 → close centred in the range: balanced session
+                    (doji-like indecision).
+
+    Series output is in [0, 1]; rows where high == low (flat/untraded)
+    yield NaN rather than a misleading 0.
+    """
+    spread = df[high_col] - df[low_col]
+    clv = df[close_col].sub(df[low_col]) / spread.where(spread > 0)
+    return clv
+
+
 def analyze_market_data(df: pd.DataFrame) -> dict:
     """Perform comprehensive technical analysis on market time-series data."""
     if df.empty or len(df) < 30:
@@ -82,6 +105,7 @@ def analyze_market_data(df: pd.DataFrame) -> dict:
     df["sma_200"] = calculate_sma(df, 200) if len(df) >= 200 else calculate_sma(df, len(df))
     df["rsi_14"] = calculate_rsi(df, 14)
     df["volatility_20"] = calculate_volatility(df, 20)
+    df["clv"] = calculate_clv(df)
 
     latest = df.iloc[-1]
     prev = df.iloc[-2]
@@ -123,5 +147,6 @@ def analyze_market_data(df: pd.DataFrame) -> dict:
         "rsi_14": round(float(rsi_val), 2) if not pd.isna(rsi_val) else None,
         "rsi_signal": rsi_signal,
         "volatility_annualized": round(float(latest["volatility_20"]) * 100, 2) if not pd.isna(latest["volatility_20"]) else None,
+        "clv": round(float(latest["clv"]), 3) if not pd.isna(latest["clv"]) else None,
         "trend": trend,
     }

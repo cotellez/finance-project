@@ -64,12 +64,13 @@ or agent decision. Always check them before suggesting execution:
 
 ## Free news feed (`finance.newsfeed`)
 
-Aggregates free public RSS headlines/summaries from CNBC + MarketWatch (no API
-keys, no paywalls for headline/summary) as a broad-market sentiment/catalyst
-layer that complements per-ticker yfinance news.
+Aggregates free public RSS headlines/summaries from CNBC, MarketWatch, Yahoo
+Finance, and Investing.com (no API keys, no paywalls for headline/summary) as a
+broad-market sentiment/catalyst layer that complements per-ticker yfinance news.
 
-- `fetch_financial_news(sources=("cnbc","marketwatch"), limit=...)` → merged,
-  deduplicated items with per-source status.
+- `fetch_financial_news(sources=("cnbc","marketwatch","yahoo","investing"), limit=...)`
+  → merged, globally deduplicated items with per-source status; output is
+  round-robin interleaved by source so no single publication dominates.
 - `fetch_rss_feed(url)` → single feed envelope (urls are allow-listed; arbitrary
   URLs are rejected for SSRF safety).
 - `score_news_feed(items)` → aggregate sentiment via `finance.sentiment`.

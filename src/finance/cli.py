@@ -2,9 +2,17 @@
 """Finance & US Stock Market CLI implementation."""
 
 import argparse
+import json
+import math
 import sys
 from datetime import date
 from pathlib import Path
+from finance.jsonstore import (
+    PROJECT_ROOT,
+    FileLock,
+    atomic_write_json,
+    resolve_path,
+)
 from finance.memory import (
     DEFAULT_LONG_TERM_DB,
     DEFAULT_SHORT_TERM_DB,
@@ -30,21 +38,47 @@ from finance.screener import score_stocks
 from finance.reports import generate_market_briefing
 import pandas as pd
 
-DEFAULT_DB = Path("finance.json")
+DEFAULT_DB = PROJECT_ROOT / "finance.json"
+
+_VALID_TX_TYPES = ("income", "expense")
 
 
-def load_transactions(db_path: Path = DEFAULT_DB) -> list:
-    import json
+def _validate_transaction_list(txs: list, db_path: Path) -> None:
+    """Validate the schema of every transaction; raise ValueError on the first bad record."""
+    for tx in txs:
+        if not isinstance(tx, dict):
+            raise ValueError(f"Transaction database '{db_path}' contains a non-object record.")
+        if tx.get("type") not in _VALID_TX_TYPES:
+            raise ValueError(
+                f"Transaction database '{db_path}' contains a record with invalid 'type': {tx.get('type')!r}."
+            )
+        amount = tx.get("amount")
+        if not isinstance(amount, (int, float)) or not math.isfinite(float(amount)):
+            raise ValueError(f"Transaction database '{db_path}' contains a record with invalid 'amount': {amount!r}.")
+        if float(amount) <= 0:
+            raise ValueError(f"Transaction database '{db_path}' contains a record with non-positive 'amount'.")
+        if not isinstance(tx.get("category"), str) or not tx["category"].strip():
+            raise ValueError(f"Transaction database '{db_path}' contains a record with invalid 'category'.")
+        if tx.get("date") is not None and not isinstance(tx["date"], str):
+            raise ValueError(f"Transaction database '{db_path}' contains a record with invalid 'date'.")
+
+
+def load_transactions(db_path: Path | None = None) -> list:
+    db_path = resolve_path(db_path, DEFAULT_DB)
     if not db_path.exists():
         return []
     try:
         with open(db_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except json.JSONDecodeError:
-        return []
+            data = json.load(f)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Transaction database '{db_path}' is corrupted (invalid JSON): {e}") from e
+    if not isinstance(data, list):
+        raise ValueError(f"Transaction database '{db_path}' must contain a JSON list of transactions.")
+    _validate_transaction_list(data, db_path)
+    return data
 
 
-def get_summary(db_path: Path = DEFAULT_DB) -> dict:
+def get_summary(db_path: Path | None = None) -> dict:
     txs = load_transactions(db_path)
     total_income = sum(t["amount"] for t in txs if t["type"] == "income")
     total_expense = sum(t["amount"] for t in txs if t["type"] == "expense")
@@ -57,11 +91,11 @@ def get_summary(db_path: Path = DEFAULT_DB) -> dict:
     }
 
 
-def add_transaction(tx_type: str, amount: float, category: str, tx_date: str = None, db_path: Path = DEFAULT_DB) -> dict:
+def add_transaction(tx_type: str, amount: float, category: str, tx_date: str = None, db_path: Path | None = None) -> dict:
     return add_transaction_impl(tx_type, amount, category, tx_date, db_path)
 
 
-def handle_add(args, db_path: Path = DEFAULT_DB) -> int:
+def handle_add(args, db_path: Path | None = None) -> int:
     try:
         tx = add_transaction_impl(
             tx_type=args.type,
@@ -77,52 +111,57 @@ def handle_add(args, db_path: Path = DEFAULT_DB) -> int:
         return 1
 
 
-def add_transaction_impl(tx_type: str, amount: float, category: str, tx_date: str = None, db_path: Path = DEFAULT_DB) -> dict:
-    import json
+def add_transaction_impl(tx_type: str, amount: float, category: str, tx_date: str = None, db_path: Path | None = None) -> dict:
+    db_path = resolve_path(db_path, DEFAULT_DB)
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError):
+        raise ValueError("Amount must be a number.")
+    if not math.isfinite(amount):
+        raise ValueError("Amount must be a finite number.")
     if amount <= 0:
         raise ValueError("Amount must be greater than zero.")
     if tx_type not in ("income", "expense"):
         raise ValueError("Type must be either 'income' or 'expense'.")
-    
+    if not isinstance(category, str) or not category.strip():
+        raise ValueError("Category must be a non-empty string.")
+
     if not tx_date:
         tx_date = date.today().isoformat()
     else:
-        date.fromisoformat(tx_date)
+        try:
+            date.fromisoformat(tx_date)
+        except (TypeError, ValueError):
+            raise ValueError("Date must be a string in YYYY-MM-DD format.")
 
     tx = {
         "type": tx_type,
-        "amount": round(float(amount), 2),
+        "amount": round(amount, 2),
         "category": category,
         "date": tx_date,
     }
 
-    if not db_path.exists():
-        txs = []
-    else:
-        try:
-            with open(db_path, "r", encoding="utf-8") as f:
-                txs = json.load(f)
-        except json.JSONDecodeError:
-            txs = []
-
-    txs.append(tx)
-    with open(db_path, "w", encoding="utf-8") as f:
-        json.dump(txs, f, indent=2)
+    with FileLock(db_path):
+        txs = load_transactions(db_path)
+        txs.append(tx)
+        atomic_write_json(
+            db_path,
+            txs,
+            audit=True,
+            audit_action="add_transaction",
+            audit_detail=f"{tx_type} ${tx['amount']:.2f} '{category}' on {tx_date}",
+        )
 
     push_context(f"Added {tx['type']}: ${tx['amount']:.2f} for '{tx['category']}'")
     return tx
 
 
-def handle_list(args, db_path: Path = DEFAULT_DB) -> int:
-    import json
-    if not db_path.exists():
-        txs = []
-    else:
-        try:
-            with open(db_path, "r", encoding="utf-8") as f:
-                txs = json.load(f)
-        except json.JSONDecodeError:
-            txs = []
+def handle_list(args, db_path: Path | None = None) -> int:
+    try:
+        txs = load_transactions(db_path)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
 
     push_context("Listed all transactions")
     if not txs:
@@ -135,26 +174,18 @@ def handle_list(args, db_path: Path = DEFAULT_DB) -> int:
     return 0
 
 
-def handle_summary(args, db_path: Path = DEFAULT_DB) -> int:
-    import json
-    if not db_path.exists():
-        txs = []
-    else:
-        try:
-            with open(db_path, "r", encoding="utf-8") as f:
-                txs = json.load(f)
-        except json.JSONDecodeError:
-            txs = []
-
-    total_income = sum(t["amount"] for t in txs if t["type"] == "income")
-    total_expense = sum(t["amount"] for t in txs if t["type"] == "expense")
-    balance = total_income - total_expense
+def handle_summary(args, db_path: Path | None = None) -> int:
+    try:
+        summary = get_summary(db_path)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
 
     push_context("Viewed financial summary")
-    print(f"Total Income:  ${total_income:.2f}")
-    print(f"Total Expense: ${total_expense:.2f}")
-    print(f"Net Balance:   ${balance:.2f}")
-    print(f"Transactions:  {len(txs)}")
+    print(f"Total Income:  ${summary['total_income']:.2f}")
+    print(f"Total Expense: ${summary['total_expense']:.2f}")
+    print(f"Net Balance:   ${summary['balance']:.2f}")
+    print(f"Transactions:  {summary['count']}")
     return 0
 
 
@@ -202,6 +233,15 @@ def handle_market_analyze(args) -> int:
         print(f"200-day SMA:          ${metrics['sma_200'] if metrics['sma_200'] is not None else 'N/A'}")
         print(f"14-day RSI:           {metrics['rsi_14'] if metrics['rsi_14'] is not None else 'N/A'} ({metrics['rsi_signal']})")
         print(f"Annualized Volatility: {metrics['volatility_annualized']}%" if metrics['volatility_annualized'] is not None else "Annualized Volatility: N/A")
+        if metrics["clv"] is not None:
+            clv = metrics["clv"]
+            if clv >= 0.8:
+                clv_label = "Strong buying pressure (close near high / long lower wick)"
+            elif clv <= 0.2:
+                clv_label = "Strong selling pressure (close near low / long upper wick)"
+            else:
+                clv_label = "Balanced session"
+            print(f"Close Location Value: {clv:.3f} ({clv_label})")
         print(f"Trend Score:          {metrics['trend']}")
         push_context(f"Analyzed market for {args.symbol.upper()} - Trend: {metrics['trend']}")
         return 0
@@ -599,11 +639,75 @@ def handle_report_generate(args) -> int:
         return 1
 
 
+def handle_news_fetch(args) -> int:
+    try:
+        from finance.newsfeed import fetch_financial_news, score_news_feed, detect_catalysts
+
+        sources = tuple(args.source or ()) or ("cnbc", "marketwatch", "yahoo", "investing")
+        feed = fetch_financial_news(sources=sources, limit=args.limit)
+        items = feed["items"]
+
+        print(f"=== Financial News Feed ({'+'.join(sources)}) ===")
+        print(f"Status: {feed['status'].upper()} | Headlines: {len(items)}")
+
+        if not args.no_sentiment and items:
+            score = score_news_feed(items)
+            print(f"Aggregate Sentiment: {score['score']:+.3f} ({score['label']}) | Items: {score['items_scored']}")
+
+        if not args.no_catalysts and items:
+            catalysts = detect_catalysts(items)
+            active = {k: v for k, v in catalysts.items() if v}
+            if active:
+                print("\nCatalysts Detected:")
+                for group, group_items in active.items():
+                    titles = [it.get("title", "")[:70] for it in group_items[:3]]
+                    print(f"  {group.upper()} ({len(group_items)}): {'; '.join(titles)}")
+
+        if not items:
+            print("No news items returned. Feeds may be unavailable (see per-source errors below).")
+            for s in feed["sources"]:
+                if not s["ok"]:
+                    print(f"  FAILED {s['source']}/{s['url']}: {s['error']}")
+            return 0
+
+        for s in feed["sources"]:
+            if not s["ok"]:
+                print(f"  (degraded {s['source']}: {s['error']})")
+
+        print("\nHeadlines:")
+        for i, it in enumerate(items, 1):
+            src = it.get("source", "?")
+            title = it.get("title", "")
+            summary = it.get("summary", "")
+            print(f"  {i:>2}. [{src}] {title}")
+            if summary and len(summary) > 2:
+                print(f"       > {summary[:140]}")
+            if args.links and it.get("link"):
+                print(f"       <{it['link']}>")
+
+        push_context(f"Fetched financial news feed: {len(items)} headlines, status {feed['status']}")
+        return 0
+    except Exception as e:
+        print(f"Error fetching news: {e}", file=sys.stderr)
+        return 1
+
+
 def handle_wrap_up(args) -> int:
     from datetime import datetime
 
     # 1. Transaction & Budget Review
-    txs = load_transactions()
+    # Fail loudly on a corrupt/unreadable ledger rather than wrap up with a
+    # fabricated balance that gets archived as if it were real.
+    try:
+        txs = load_transactions()
+    except ValueError as e:
+        print("=" * 60)
+        print("           FINANCE SESSION WRAP-UP -- ABORTED")
+        print("=" * 60)
+        print(f"Error reading transaction database: {e}", file=sys.stderr)
+        print("No files were modified. Short-term memory left intact for diagnosis.", file=sys.stderr)
+        return 1
+
     total_income = sum(t["amount"] for t in txs if t["type"] == "income")
     total_expense = sum(t["amount"] for t in txs if t["type"] == "expense")
     balance = total_income - total_expense
@@ -618,7 +722,11 @@ def handle_wrap_up(args) -> int:
     print(f"  Transactions:   {len(txs)}")
 
     # 2. Portfolio Check
-    positions = load_portfolio()
+    try:
+        positions = load_portfolio()
+    except ValueError as e:
+        print(f"  Warning: portfolio.json unreadable: {e}", file=sys.stderr)
+        positions = []
     portfolio_val = None
     if positions:
         print(f"\n--- 2. Portfolio Holdings ---")
@@ -670,12 +778,13 @@ def handle_wrap_up(args) -> int:
         progress_entry += f"  {item.strip()}\n"
 
     try:
-        if progress_path.exists():
-            with open(progress_path, "a", encoding="utf-8") as f:
-                f.write(progress_entry)
-        else:
-            with open(progress_path, "w", encoding="utf-8") as f:
-                f.write("# Progress Log\n" + progress_entry)
+        with FileLock(progress_path):
+            if progress_path.exists():
+                with open(progress_path, "a", encoding="utf-8") as f:
+                    f.write(progress_entry)
+            else:
+                with open(progress_path, "w", encoding="utf-8") as f:
+                    f.write("# Progress Log\n" + progress_entry)
     except Exception as e:
         print(f"  Warning: Could not update progress.md: {e}")
 
@@ -841,6 +950,15 @@ def build_parser() -> argparse.ArgumentParser:
     # report subcommand
     report_parser = subparsers.add_parser("report", help="Generate comprehensive automated market briefing report")
     report_parser.set_defaults(func=handle_report_generate)
+
+    # news subcommand
+    news_parser = subparsers.add_parser("news", help="Fetch free broad-market news feed (CNBC/MarketWatch) with sentiment & catalysts")
+    news_parser.add_argument("--limit", type=int, default=20, help="Max headlines to show (default 20)")
+    news_parser.add_argument("--source", action="append", choices=["cnbc", "marketwatch", "yahoo", "investing"], help="Source(s); repeatable (default: all four)")
+    news_parser.add_argument("--no-sentiment", action="store_true", help="Skip aggregate sentiment scoring")
+    news_parser.add_argument("--no-catalysts", action="store_true", help="Skip catalyst detection")
+    news_parser.add_argument("--links", action="store_true", help="Show article URLs")
+    news_parser.set_defaults(func=handle_news_fetch)
 
     # wrap-up subcommand
     wrap_parser = subparsers.add_parser("wrap-up", help="Execute end-of-session financial wrap-up and clear session memory")
