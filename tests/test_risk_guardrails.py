@@ -73,6 +73,50 @@ def test_position_concentration_breaker():
     assert any("CONCENTRATION" in r for r in res["blocked_reasons"])
 
 
+def test_etf_position_uses_higher_asymmetric_cap_by_symbol():
+    # SCHD is in etf_symbols -> 90% ETF cap, so 60% is allowed.
+    metrics = {
+        "total_pnl_pct": 2.0,
+        "total_value": 100_000,
+        "positions": [{"symbol": "SCHD", "current_value": 60_000}],
+    }
+    res = check_circuit_breakers(metrics, {"max_position_pct": 25.0, "max_etf_position_pct": 90.0,
+                                           "etf_symbols": ["SCHD"]})
+    assert res["halt"] is False
+    assert res["checks"]["concentration_ok"] is True
+
+    # Same stock symbol (not in etf_symbols) at 60% still halts.
+    metrics["positions"] = [{"symbol": "SHLD", "current_value": 60_000}]
+    res = check_circuit_breakers(metrics, {"max_position_pct": 25.0, "max_etf_position_pct": 90.0,
+                                           "etf_symbols": ["SCHD"]})
+    assert res["halt"] is True
+
+
+def test_etf_position_uses_higher_asymmetric_cap_by_flag():
+    metrics = {
+        "total_pnl_pct": 2.0,
+        "total_value": 100_000,
+        "positions": [{"symbol": "NVDA", "current_value": 80_000, "is_etf": False}],
+    }
+    res = check_circuit_breakers(metrics, {"max_position_pct": 25.0, "max_etf_position_pct": 90.0})
+    assert res["halt"] is True
+
+    metrics["positions"] = [{"symbol": "SCHB", "current_value": 80_000, "is_etf": True}]
+    res = check_circuit_breakers(metrics, {"max_position_pct": 25.0, "max_etf_position_pct": 90.0})
+    assert res["halt"] is False
+
+
+def test_validate_position_size_with_asymmetric_etf_cap():
+    # Single stock: 25% cap applies.
+    assert validate_position_size(50_000, 100_000, 25.0) == 25_000
+    # ETF with asymmetric cap: 90% applies.
+    assert validate_position_size(80_000, 100_000, 25.0, max_etf_position_pct=90.0, is_etf=True) == 80_000
+    # ETF under the ETF cap but above single-stock cap is allowed.
+    assert validate_position_size(60_000, 100_000, 25.0, max_etf_position_pct=90.0, is_etf=True) == 60_000
+    # ETF above the ETF cap is still trimmed.
+    assert validate_position_size(95_000, 100_000, 25.0, max_etf_position_pct=90.0, is_etf=True) == 90_000
+
+
 def test_calculate_var():
     returns = pd.Series(np.random.normal(0.001, 0.02, 500))
     var = calculate_var(returns, confidence=0.95)

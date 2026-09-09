@@ -36,7 +36,7 @@ ORDER 1 — SELL
   Confirmable: yes/no against available shares
 ```
 - **Sells:** check shares are actually in `portfolio.json` (never sell phantom holdings). Limit = user's stated minimum.
-- **Buys:** check available cash covers cost (cash ledger), and check the 25% concentration cap: a buy may not push a symbol past 25% of projected total value. Flag violations explicitly.
+- **Buys:** check available cash covers cost (cash ledger), and check the concentration cap: a buy may not push a symbol past its cap of projected total value. The cap is **asymmetric**: diversified index ETFs (SCHD, SPY, SCHB, VTI, ITOT, VOO, QQQ, etc.) are capped at **90%**; single stocks (e.g. NVDA, AAPL) at **25%**. Flag violations explicitly.
 - **Limit guidance:** if the user has no limit, recommend between the last close and current quote, and note that a Day limit that doesn't fill simply expires at 4:00pm ET with no fee or penalty (Schwab). Mention market-buy cost difference (e.g. "$0.10/share over limit ≈ $4.10 on 41 shares") so the user can decide.
 
 ## Post-fill reconciliation

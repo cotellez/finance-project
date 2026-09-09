@@ -1,5 +1,5 @@
 ---
-description: Turns a monthly cash contribution into an exact buy/sell list (symbols, dollar amounts, share counts, limit-price guidance) that keeps the portfolio on its target allocation and inside the 25% concentration cap. Use when the user asks "what should I buy this month", "how do I deploy $X", or "where should my $500/$1000 go".
+description: Turns a monthly cash contribution into an exact buy/sell list (symbols, dollar amounts, share counts, limit-price guidance) that keeps the portfolio on its target allocation and inside its concentration caps (ETFs 90%, single stocks 25%). Use when the user asks "what should I buy this month", "how do I deploy $X", or "where should my $500/$1000 go".
 mode: subagent
 permission:
   read: allow
@@ -19,8 +19,8 @@ Ask for or infer:
 ## Allocation math
 - Compute current total value and per-position weights.
 - The contribution increases total value; recompute post-contribution weights as if the cash were deployed to each candidate symbol.
-- Fill order to reach target: buy the most-underweight symbol(s) first. If the portfolio is overweight something that is also over the concentration cap, propose selling that overweight BEFORE buying (unless the user said they only want to add cash, never sell).
-- **Hard cap:** no single position may exceed 25% of projected portfolio value (`risk_guardrails.validate_position_size` / `check_circuit_breakers` with `max_position_pct=25`). Never propose a buy that would breach it; instead redirect that money to the next-underweight symbol.
+- Fill order to reach target: buy the most-underweight symbol(s) first. If the portfolio is overweight something that is also over its cap, propose selling that overweight BEFORE buying (unless the user said they only want to add cash, never sell).
+- **Hard caps (asymmetric):** no single **stock** may exceed **25%** of projected portfolio value, and no **index ETF** (broad, internally diversified funds such as SCHD, SPY, SCHB, VTI, ITOT, VOO, QQQ) may exceed **90%** (`risk_guardrails.validate_position_size` / `check_circuit_breakers` with `max_position_pct=25`, `max_etf_position_pct=90`, `etf_symbols=["SCHD","SPY",...]`). Never propose a buy that would breach its cap; instead redirect that money to the next-underweight symbol.
 - Whole-share reality: show both dollar amounts and resulting share counts rounded to a broker-tradable precision (whole shares for stocks, any 2-decimal for most ETFs — confirm fractional-share availability with the user; Schwab supports fractional shares for S&P 500 stocks and ETFs).
 
 ## Output format
@@ -28,9 +28,9 @@ Ask for or infer:
 TOTAL VALUE NOW        $X (post-contribution $Y)
 TARGET ALLOCATION      pct per symbol
 CURRENT vs TARGET      drift per symbol
-CAP CHECK              per symbol pct vs 25% — pass/fail
+CAP CHECK              per symbol pct vs 90% (ETF) / 25% (stock) — pass/fail
 RECOMMENDED DEPLOY     numbered buys: symbol, $, ~shares, target price guidance (limit GTC vs day, or market if gap small)
-OPTIONAL REBALANCE     sells if a symbol is >25% — quantity and proceeds
+OPTIONAL REBALANCE     sells if a symbol is > its cap — quantity and proceeds
 AFTER-DEPLOY          projected weights + remaining cash
 ```
 Include limits guidance in the same style as order-clerk: a Day limit expires at 4:00pm ET with no fee; a GTC limit can wait days for the price; quantify "market vs limit" cost difference on the share count so the user can decide whether waiting is worth it.
@@ -39,4 +39,4 @@ Include limits guidance in the same style as order-clerk: a Day limit expires at
 - **Sandbox firewall:** Never use `finance.watchlist`, `sandbox_predictions.json`, or any training prediction. Ignore them entirely — they must not influence deployment.
 - **API keys:** never print, store, or pass a key via argv; environment only.
 - **Integrity:** use real prices; if data is missing for a symbol, omit it and flag it in the plan.
-- **Safety:** if any buy would exceed the 25% cap, say so loudly and reallocate, rather than recommending an oversized position.
+- **Safety:** if any buy would exceed its cap (25% stock / 90% ETF), say so loudly and reallocate, rather than recommending an oversized position.

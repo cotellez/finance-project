@@ -233,7 +233,14 @@ than from the shell. They are deterministic and unit-tested offline.
 
   finance.risk_guardrails.check_circuit_breakers(metrics, config)
       Hard risk veto: returns halt=True/False on drawdown/concentration
-      breaches. Overrides agent discretion.
+      breaches. Overrides agent discretion. Concentration caps are
+      asymmetric: single stocks cap at max_position_pct=25, index ETFs
+      (config etf_symbols) at max_etf_position_pct=90.
+
+  finance.risk_guardrails.validate_position_size(notional, portfolio_value,
+      max_position_pct=25.0, max_etf_position_pct=None, is_etf=False)
+      Max allowed position notional given a portfolio cap; pass
+      max_etf_position_pct + is_etf=True for the asymmetric ETF cap.
 
   finance.sentiment.score_news_items / score_analyst_actions
       Negation-aware sentiment scoring for news and analyst actions.

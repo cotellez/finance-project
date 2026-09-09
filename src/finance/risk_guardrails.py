@@ -92,8 +92,15 @@ def check_circuit_breakers(portfolio_metrics: dict, config: dict) -> dict:
             compatible shape with total_value / total_pnl_pct.
         config: dict with optional thresholds:
             - max_drawdown_pct (e.g., 20.0): halt if P&L drawdown exceeds this
-            - max_position_pct (e.g., 25.0): max single-position concentration
+            - max_position_pct (e.g., 25.0): max single-stock position concentration
+            - max_etf_position_pct (e.g., 90.0): max ETF/index-fund position
+              concentration (ETFs are internally diversified)
+            - etf_symbols (list/tuple/set): symbols treated as ETFs for the cap
             - max_volatility_annualized (e.g., 50.0): halt if portfolio vol too high
+
+    A position is treated as an ETF when its symbol is in config's `etf_symbols`,
+    when the position carries `is_etf=True`, or when its `instrument_type` is
+    "etf". Otherwise the single-stock cap applies.
 
     Returns:
         dict with `halt` (bool), `blocked_reasons` (list), and booleans per check.
@@ -109,20 +116,30 @@ def check_circuit_breakers(portfolio_metrics: dict, config: dict) -> dict:
             f"MAX DRAWDOWN EXCEEDED: portfolio P&L is {pnl_pct:.1f}% vs limit -{max_drawdown_pct:.0f}%. Halting trading."
         )
 
-    # Position concentration check.
+    # Position concentration check (asymmetric: ETFs get a higher cap than single stocks).
     max_position_pct = config.get("max_position_pct", 25.0)
+    max_etf_position_pct = config.get("max_etf_position_pct", 90.0)
+    etf_symbols = set(config.get("etf_symbols") or ())
     positions = portfolio_metrics.get("positions", [])
     total_value = portfolio_metrics.get("total_value", 0.0)
     concentration_ok = True
     for pos in positions:
         if total_value > 0:
+            symbol = pos.get("symbol")
+            is_etf = (
+                symbol in etf_symbols
+                or pos.get("is_etf") is True
+                or pos.get("instrument_type") == "etf"
+            )
+            limit_pct = max_etf_position_pct if is_etf else max_position_pct
             weight = (pos.get("current_value", 0.0) / total_value) * 100
-            if weight > max_position_pct:
+            if weight > limit_pct:
                 halt = True
                 concentration_ok = False
                 blocked_reasons.append(
-                    f"POSITION CONCENTRATION: {pos.get('symbol')} is {weight:.1f}% of portfolio "
-                    f"(limit {max_position_pct:.0f}%). Halting new concentration."
+                    f"POSITION CONCENTRATION: {symbol} is {weight:.1f}% of portfolio "
+                    f"(limit {limit_pct:.0f}% for {'ETF' if is_etf else 'single stock'}). "
+                    f"Halting new concentration."
                 )
 
     # Annualized volatility check.
@@ -142,6 +159,7 @@ def check_circuit_breakers(portfolio_metrics: dict, config: dict) -> dict:
         "blocked_reasons": blocked_reasons,
         "max_drawdown_pct_limit": max_drawdown_pct,
         "max_position_pct_limit": max_position_pct,
+        "max_etf_position_pct_limit": max_etf_position_pct,
         "checks": {
             "drawdown_ok": pnl_pct > -abs(max_drawdown_pct),
             "concentration_ok": concentration_ok,
@@ -158,9 +176,15 @@ def calculate_var(returns: pd.Series, confidence: float = 0.95) -> float:
     return max(0.0, min(var, 1.0))
 
 
-def validate_position_size(notional: float, portfolio_value: float, max_position_pct: float = 25.0) -> float:
-    """Return the maximum allowed position notional given a portfolio cap."""
-    cap = portfolio_value * (max_position_pct / 100.0)
+def validate_position_size(notional: float, portfolio_value: float, max_position_pct: float = 25.0,
+                           max_etf_position_pct: float | None = None, is_etf: bool = False) -> float:
+    """Return the maximum allowed position notional given a portfolio cap.
+
+    ETFs (broad, internally diversified funds) may carry a higher cap than a
+    single stock. Pass max_etf_position_pct to enable the asymmetric ETF cap.
+    """
+    limit_pct = max_etf_position_pct if (is_etf and max_etf_position_pct is not None) else max_position_pct
+    cap = portfolio_value * (limit_pct / 100.0)
     return min(notional, cap)
 
 

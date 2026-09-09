@@ -108,7 +108,8 @@ def save_ledger(
     )
 
 
-def paper_buy(symbol: str, price: float, shares: float, db_path: Path | None = None, max_position_pct: float = 25.0) -> dict:
+def paper_buy(symbol: str, price: float, shares: float, db_path: Path | None = None, max_position_pct: float = 25.0,
+              max_etf_position_pct: float | None = None, is_etf: bool = False) -> dict:
     """Execute a simulated buy, enforcing position concentration limits."""
     db_path = resolve_path(db_path, DEFAULT_LEDGER)
     try:
@@ -130,9 +131,10 @@ def paper_buy(symbol: str, price: float, shares: float, db_path: Path | None = N
             p["shares"] * p["avg_price"] for p in ledger["positions"].values()
         )
 
-        # Circuit breaker: cap position notional.
+        # Circuit breaker: cap position notional (asymmetric ETF cap supported).
         from finance.risk_guardrails import validate_position_size
-        allowed = validate_position_size(cost, portfolio_value, max_position_pct)
+        allowed = validate_position_size(cost, portfolio_value, max_position_pct,
+                                         max_etf_position_pct=max_etf_position_pct, is_etf=is_etf)
         if allowed < cost:
             shares = allowed / price if price > 0 else 0.0
             cost = price * shares
