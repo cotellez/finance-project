@@ -36,6 +36,7 @@ from finance.optimization import optimize_portfolio
 from finance.backtest import backtest_sma_crossover
 from finance.screener import score_stocks
 from finance.reports import generate_market_briefing
+from finance.watchlist import load_watchlist, add_prediction, evaluate_watchlist
 import pandas as pd
 
 DEFAULT_DB = PROJECT_ROOT / "finance.json"
@@ -866,6 +867,84 @@ def handle_memory_clear(args) -> int:
     return 0
 
 
+WATCHLIST_BANNER = (
+    "================================================================================\n"
+    "[SANDBOX / TRAINING PREDICTION ONLY — NOT FINANCIAL ADVICE OR PORTFOLIO ACTION]\n"
+    "================================================================================"
+)
+
+
+def handle_watchlist_add(args, db_path: Path | None = None) -> int:
+    print(WATCHLIST_BANNER)
+    try:
+        pred = add_prediction(
+            symbol=args.symbol,
+            pred_type=args.type,
+            hypothesis=args.hypothesis,
+            horizon_days=args.horizon,
+            db_path=db_path,
+        )
+        print(f"Logged {pred['type'].upper()} prediction for {pred['symbol']}:")
+        print(f"  Hypothesis:    {pred['hypothesis']}")
+        print(f"  Initial Price: ${pred['initial_price']:.2f}")
+        if pred.get("initial_spy_price"):
+            print(f"  SPY Benchmark: ${pred['initial_spy_price']:.2f}")
+        print(f"  Horizon:       {pred['horizon_days']} days")
+        print(f"  Status:        {pred['status']}")
+        return 0
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
+def handle_watchlist_list(args, db_path: Path | None = None) -> int:
+    print(WATCHLIST_BANNER)
+    try:
+        items = load_watchlist(db_path)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    if not items:
+        print("No sandbox predictions recorded yet. Use 'finance watchlist add <SYM> <winner|loser> <HYPOTHESIS>' to start.")
+        return 0
+
+    print(f"{'Symbol':<8} | {'Type':<8} | {'Initial $':<10} | {'Horizon':<10} | {'Status':<8} | {'Hypothesis'}")
+    print("-" * 80)
+    for p in items:
+        print(f"{p['symbol']:<8} | {p['type'].upper():<8} | ${p['initial_price']:<9.2f} | {str(p.get('horizon_days', 30)) + 'd':<10} | {p.get('status', 'active'):<8} | {p['hypothesis']}")
+    return 0
+
+
+def handle_watchlist_evaluate(args, db_path: Path | None = None) -> int:
+    print(WATCHLIST_BANNER)
+    try:
+        results = evaluate_watchlist(db_path)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    if not results:
+        print("No sandbox predictions to evaluate.")
+        return 0
+
+    print(f"{'Symbol':<7} | {'Type':<6} | {'Init $':<8} | {'Curr $':<8} | {'Stock %':<8} | {'SPY %':<7} | {'Rel %':<7} | {'Result':<7} | {'Status'}")
+    print("-" * 80)
+    for r in results:
+        res_str = "CORRECT" if r["is_correct"] else "WRONG"
+        stock_chg = f"{r['price_change_pct']:+.2f}%"
+        spy_chg = f"{r['spy_change_pct']:+.2f}%"
+        rel_chg = f"{r['relative_return_pct']:+.2f}%"
+        print(f"{r['symbol']:<7} | {r['type'].upper():<6} | ${r['initial_price']:<7.2f} | ${r['current_price']:<7.2f} | {stock_chg:<8} | {spy_chg:<7} | {rel_chg:<7} | {res_str:<7} | {r['status']}")
+
+    total = len(results)
+    correct_count = sum(1 for r in results if r["is_correct"])
+    win_rate = (correct_count / total) * 100 if total > 0 else 0.0
+    print("-" * 80)
+    print(f"Sandbox Accuracy: {correct_count}/{total} ({win_rate:.1f}%) on track")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Finance & US Stock Market Tracking CLI")
     parser.add_argument(
@@ -963,6 +1042,23 @@ def build_parser() -> argparse.ArgumentParser:
     # wrap-up subcommand
     wrap_parser = subparsers.add_parser("wrap-up", help="Execute end-of-session financial wrap-up and clear session memory")
     wrap_parser.set_defaults(func=handle_wrap_up)
+
+    # watchlist subcommand (sandbox predictions)
+    wl_parser = subparsers.add_parser("watchlist", help="Log and track sandbox winner/loser training predictions (SPY benchmarked)")
+    wl_subparsers = wl_parser.add_subparsers(dest="watchlist_command", required=True)
+
+    wl_add_parser = wl_subparsers.add_parser("add", help="Log a sandbox winner/loser training prediction")
+    wl_add_parser.add_argument("symbol", help="Stock ticker symbol")
+    wl_add_parser.add_argument("type", choices=["winner", "loser"], help="Prediction type (winner = expect price up, loser = expect price down)")
+    wl_add_parser.add_argument("hypothesis", help="Why you expect this outcome (market condition / thesis)")
+    wl_add_parser.add_argument("--horizon", type=int, default=30, help="Prediction horizon in days (default 30)")
+    wl_add_parser.set_defaults(func=handle_watchlist_add)
+
+    wl_list_parser = wl_subparsers.add_parser("list", help="List all sandbox predictions")
+    wl_list_parser.set_defaults(func=handle_watchlist_list)
+
+    wl_eval_parser = wl_subparsers.add_parser("evaluate", help="Track prediction progress vs current price and SPY benchmark")
+    wl_eval_parser.set_defaults(func=handle_watchlist_evaluate)
 
     # memory subcommand
     memory_parser = subparsers.add_parser("memory", help="Manage in-context short-term and long-term memory")

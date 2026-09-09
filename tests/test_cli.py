@@ -39,3 +39,60 @@ def test_invalid_type(tmp_path):
     db = tmp_path / "finance.json"
     with pytest.raises(ValueError):
         add_transaction("transfer", 100.0, "Invalid", db_path=db)
+
+
+# --- Sandbox watchlist CLI ---
+
+class _Args:
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+
+def test_watchlist_handlers_roundtrip(tmp_path, monkeypatch, capsys):
+    import pandas as pd
+    from finance.cli import (
+        handle_watchlist_add,
+        handle_watchlist_list,
+        handle_watchlist_evaluate,
+    )
+    from finance import watchlist as wl
+
+    def _df(price):
+        return pd.DataFrame(
+            {
+                "open": [price, price, price],
+                "high": [price, price, price],
+                "low": [price, price, price],
+                "close": [price, price, price],
+                "adjusted_close": [price, price, price],
+                "volume": [0.0, 0.0, 0.0],
+            }
+        )
+
+    prices = {"AAPL": 100.0, "SPY": 500.0}
+
+    def _fetch(symbol, period="5d"):
+        return _df(prices[symbol])
+
+    monkeypatch.setattr(wl, "fetch_daily_with_fallback", _fetch)
+
+    db = tmp_path / "sandbox_predictions.json"
+
+    args = _Args(symbol="AAPL", type="winner", hypothesis="breakout thesis", horizon=30)
+    assert handle_watchlist_add(args, db_path=db) == 0
+
+    out = capsys.readouterr().out
+    assert "SANDBOX / TRAINING PREDICTION ONLY" in out
+    assert "Logged WINNER prediction for AAPL" in out
+
+    assert handle_watchlist_list(_Args(), db_path=db) == 0
+    out = capsys.readouterr().out
+    assert "AAPL" in out
+    assert "SANDBOX / TRAINING PREDICTION ONLY" in out
+
+    prices["AAPL"] = 110.0  # stock up, winner on track
+    assert handle_watchlist_evaluate(_Args(), db_path=db) == 0
+    out = capsys.readouterr().out
+    assert "CORRECT" in out
+    assert "SANDBOX / TRAINING PREDICTION ONLY" in out

@@ -1,0 +1,13 @@
+[
+  {
+    "id": "20260909003704_AAPL",
+    "symbol": "AAPL",
+    "type": "loser",
+    "hypothesis": "Siri/Apple-Intelligence refresh produces no repeatable revenue catalyst; high valuation (P/E ~35) leaves no margin for error -- expects AAPL to underperform SPY",
+    "timestamp": "2026-09-09T00:37:04.370550+00:00",
+    "initial_price": 319.9700012207031,
+    "initial_spy_price": 770.1900024414062,
+    "horizon_days": 30,
+    "status": "active"
+  }
+]

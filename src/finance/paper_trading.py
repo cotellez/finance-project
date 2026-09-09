@@ -17,22 +17,51 @@ from finance.jsonstore import (
 )
 
 DEFAULT_LEDGER = PROJECT_ROOT / "paper_trading.json"
+DEFAULT_STARTING_CAPITAL = 2000.0
 
 
 def _now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def initialize_ledger(
+    starting_capital: float = DEFAULT_STARTING_CAPITAL,
+    db_path: Path | None = None,
+) -> dict:
+    """Reset the shadow ledger to a fresh account with the given starting capital.
+
+    Defaults to $2,000 so small-account realities (fees, position sizing,
+    concentration risk) are forced into decisions rather than the detached
+    $100,000 psychology of a default sim.
+    """
+    db_path = resolve_path(db_path, DEFAULT_LEDGER)
+    try:
+        starting_capital = float(starting_capital)
+    except (TypeError, ValueError):
+        raise ValueError("Starting capital must be a number.")
+    if not math.isfinite(starting_capital) or starting_capital <= 0:
+        raise ValueError("Starting capital must be a finite number greater than zero.")
+    ledger = {"cash": float(starting_capital), "positions": {}, "fills": []}
+    save_ledger(
+        ledger,
+        db_path,
+        audit=True,
+        audit_action="paper_reset",
+        audit_detail=f"Reset paper account to ${starting_capital:,.2f}",
+    )
+    return ledger
+
+
 def load_ledger(db_path: Path | None = None) -> dict:
     """Load and schema-validate the shadow ledger.
 
     Fails loudly on a corrupt or malformed ledger instead of silently
-    resetting the shadow account to a fresh $100,000 (which could make a
+    resetting the shadow account to a fresh one (which could make a
     mid-session wrap-up read the wrong state as if it were real).
     """
     db_path = resolve_path(db_path, DEFAULT_LEDGER)
     if not db_path.exists():
-        return {"cash": 100_000.0, "positions": {}, "fills": []}
+        return {"cash": DEFAULT_STARTING_CAPITAL, "positions": {}, "fills": []}
     try:
         with open(db_path, "r", encoding="utf-8") as f:
             data = json.load(f)
