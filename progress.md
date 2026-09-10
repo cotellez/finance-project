@@ -492,3 +492,50 @@ User asked how to read/interpret/use **candles and wicks** to assess or predict 
 - **Contributions Model:** Monthly $500/$750/$1,000 Monte Carlo (5k sims) - 3yr median $31.7k (500/mo) to $58.8k ($1,000/mo). Contributions naturally dilute concentration if funneled into SCHD.
 - **Feature Work:** Added agents portfolio-manager, order-clerk, contribution-planner in .opencode/agent/ (read-only, bash ask, firewalled from watchlist).
 - **Open Items:** (a) RE-PLACE 41 SCHD buy today/next session (limit $34.30 GTC or market ~$34.40) - concentration halt blocks new buys until then; (b) monthly $500-1,000 contributions funnel into SCHD per optimizer; (c) assess Plan A rebalance (sell NVDA diversification) at month-end if SCHD deployment insufficient.
+
+## Session Wrap-Up (2026-09-08 20:25)
+- **Transactions:** 4 recorded | Net Balance: $1,509.79
+- **Portfolio:** 2 position(s) tracked
+- **Actions Taken:**
+  - Session wrap-up completed
+  - Short-term memory cleared
+- **Next Steps:**
+  [ ] Optimize your portfolio allocation: finance optimize
+  [ ] Screen for top momentum stocks: finance screen
+  [ ] Check macroeconomic conditions: finance macro overview
+  [ ] Run a backtest on a strategy: finance backtest SPY --fast 20 --slow 50
+  [ ] Generate a full market briefing: finance report
+
+## Session Wrap-Up (2026-09-08 20:25) - FULL CLOSEOUT
+- **Trade Reconciliation:** NO new live trades this session (SPYM sell and deposit were reconciled in the prior 16:44 close-out). Current portfolio.json: SCHD 2x @ $35.05, NVDA 2x @ $210.44. No phantom holdings. No paper-ledger fills (no paper_trading.json). Deploy plan approved this session, not yet executed.
+- **Cash Ledger (finance.json):** Income $1,509.79 (Cash on hand $4.30 + Sold SPYI $53.94 + Cash deposit $1,000 + Sold 5 SPYM $451.55), Expenses $0.00, Net Balance $1,509.79 awaiting the SCHD deploy at next open.
+- **Live Mark-to-Market (close 2026-09-08):** SCHD $34.41 (-1.83%), NVDA $225.73 (+7.27%). Holdings $520.28, Cost $490.98, Unrealized P&L +$29.30 (+5.97%).
+- **Risk Status (asymmetric caps):** HALT ACTIVE on NVDA 86.8% of HOLDINGS-only metrics (artifact — cash excluded from holdings basis). Post-deploy the 43-SCHD buy clears it: SCHD ~76.3% (ETF, <90% cap PASS), NVDA ~22.2% (stock, <25% cap PASS). Drawdown/vol OK.
+- **Dev-Env Decision (this session):** Adopted ASYMMETRIC concentration caps — diversified index ETFs (SCHD, SPY, SCHB, ITOT, VTI, VOO, QQQ, VYM, VIG) cap at 90% of projected portfolio value; single stocks cap at 25%. Resolves the prior conflict where the flat 25% cap blocked the 88/12 SCHD-heavy target. Implemented in code + docs + agents, committed `a09f8d7`; 119/119 tests pass.
+- **SOP Adopted:** 1) run briefing first each session (`finance report` / /briefing), 2) delegate to specialized agents (portfolio-manager, contribution-planner, quant-analyst, risk-sentinel), 3) execute/log approved orders, 4) /wrap-up last.
+- **Deploy Plan Approved (contribution-planner, new caps):** projected post-deploy total $2,030.07. Option A: BUY 43 SCHD @ $34.41 ($1,479.63) → SCHD 76.28%, NVDA 22.24%, cash $30.16. Option B (fractional): 43.88 sh → SCHD 77.77%, ~$0 cash. Optional rebalance to hit 88/12: SELL 1 NVDA @ $225.73 + BUY 6 SCHD → SCHD 88.14%, NVDA 11.12%.
+- **Open Items:** (a) PLACE 43 SCHD buy at next open (GTC @ $34.41 recommended, Day @ $34.41 or market acceptable; fractional 43.88 if available) — clears the concentration halt and deploys $1,479.63 of $1,509.79; (b) optionally sell 1 NVDA to reach 88/12; (c) monthly $500-1,000 contributions funnel into SCHD (Option B + rebalance nails target next month); (d) AAPL loser sandbox prediction active (entry $319.97 vs SPY $770.19, horizon 30d → ~Oct 8) — evaluate on manual request (firewalled from everything).
+
+## Session Wrap-Up (2026-09-09 11:32)
+- **Transactions:** 5 recorded | Net Balance: $0.64
+- **Portfolio:** 2 position(s) tracked
+- **Actions Taken:**
+  - Session wrap-up completed
+  - Short-term memory cleared
+- **Next Steps:**
+  [ ] Optimize your portfolio allocation: finance optimize
+  [ ] Screen for top momentum stocks: finance screen
+  [ ] Check macroeconomic conditions: finance macro overview
+  [ ] Run a backtest on a strategy: finance backtest SPY --fast 20 --slow 50
+  [ ] Generate a full market briefing: finance report
+
+## Session Close-Out Detail (2026-09-09 11:33)
+- **Trade Reconciliation:** BUY SCHD 44 sh @ $34.30 (43@$34.30 + 1@$34.25, ~$1,509.15) - 2026-09-09. NO SELLS. Realized P&L: $0.00
+- **Portfolio after session (portfolio.json):** SCHD 46 sh @ $34.33 avg; NVDA 2 sh @ $210.44. No phantom holdings. Paper ledger: no fills.
+- **Live Valuation (Sep 09):** SCHD $34.12; NVDA $224.10
+  - Total Cost Basis: $2,000.06 | Market Value: $2,017.73 | Unrealized P&L: +$17.67 (+0.88%)
+  - SCHD: 46 sh, value $1,569.52, P&L -$9.66 (-0.61%) | NVDA: 2 sh, value $448.21, P&L +$27.33 (+6.49%)
+- **Cash:** Net balance $0.64 (income $1,509.79 - expense $1,509.15, 5 txns). Funds $1,000 TBD (growth deployment).
+- **Risk Status:** halt=False. Drawdown ok | Concentration ok (SCHD 77.8% < 90%; NVDA 22.2% < 25%) | Volatility ok.
+- **Decisions (researched, NOT executed):** CRDO lottery-only; MU BUY post-9/30 (0.5-0.7 sh); NVDA is preferred new-money add (25% cap, max ~3.4 sh).
+- **Open Items:** $1,000 availability; MU 9/30 earnings print; refresh quotes/data on next session (plans stale 3-5 days); setx GEMINI_API_KEY for /pdf2md persistence.
