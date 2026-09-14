@@ -5,6 +5,11 @@
       "type": "local",
       "command": ["yfmcp"],
       "enabled": true
+    },
+    "cognitive-memory": {
+      "type": "local",
+      "command": ["python", "-m", "finance.memory_mcp"],
+      "enabled": true
     }
   }
 }
