@@ -1,0 +1,161 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  fast:
+    name: fast (py ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install package
+        run: pip install -e .[dev]
+
+      - name: Run fast unit tests
+        run: >
+          python -m pytest
+          tests/test_cli.py
+          tests/test_valuation.py
+          tests/test_sentiment.py
+          tests/test_bias_guard.py
+          tests/test_memory.py
+          tests/test_memory_mcp.py
+          tests/test_news_cli.py
+          tests/test_newsfeed.py
+          tests/test_watchlist.py
+          tests/test_wrapup.py
+          tests/test_pdf2md.py
+          tests/test_risk_guardrails.py
+          -q --junitxml=junit-fast.xml --durations=20
+
+      - name: Upload fast results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-fast-py${{ matrix.python-version }}
+          path: junit-fast.xml
+
+  slow:
+    name: slow / network-shaped (py 3.12)
+    runs-on: ubuntu-latest
+    needs: fast
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect relevant changes
+        id: changes
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          elif git diff --name-only "origin/${{ github.base_ref }}"...HEAD | grep -Eq '^(src/|tests/|pyproject.toml|.github/)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python
+        if: steps.changes.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install package
+        if: steps.changes.outputs.run == 'true'
+        run: pip install -e .[dev]
+
+      # All tests here are mocked/offline by design (see AGENTS.md),
+      # but they exercise the heavy quant / market / broker paths,
+      # so they run as the second tier behind fast unit tests.
+      - name: Run slow tests
+        if: steps.changes.outputs.run == 'true'
+        run: >
+          python -m pytest
+          tests/test_market.py
+          tests/test_fred.py
+          tests/test_stock_data.py
+          tests/test_advanced.py
+          tests/test_advanced_quant.py
+          tests/test_paper_trading.py
+          -q --junitxml=junit-slow.xml --durations=20
+
+      - name: Upload slow results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-slow
+          path: junit-slow.xml
+          if-no-files-found: ignore
+
+  flake-report:
+    name: flake-report
+    runs-on: ubuntu-latest
+    needs: [fast, slow]
+    if: always()
+    steps:
+      - name: Download results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: junit-*
+          merge-multiple: true
+
+      - name: Summarize slowest tests
+        run: |
+          python - <<'EOF'
+          import glob, xml.etree.ElementTree as ET
+          for f in sorted(glob.glob('junit-*.xml')):
+              try:
+                  root = ET.parse(f).getroot()
+              except Exception as e:
+                  print(f'{f}: unparsable ({e})')
+                  continue
+              cases = root.iter('testcase')
+              rows = [(c.get('classname', ''), c.get('name', ''), float(c.get('time', 0) or 0)) for c in cases]
+              rows.sort(key=lambda r: r[2], reverse=True)
+              print(f'== {f}: {len(rows)} tests ==')
+              for cls, name, t in rows[:10]:
+                  print(f'  {t:7.2f}s {cls}::{name}')
+          EOF
+
+  docker:
+    name: docker build + smoke
+    runs-on: ubuntu-latest
+    needs: fast
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t finance:ci .
+
+      - name: Smoke test CLI
+        run: docker run --rm finance:ci --help
