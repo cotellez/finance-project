@@ -200,3 +200,16 @@ The **wrap-up** command concludes your working session by summarizing financial 
   finance memory remember risk_profile "moderate"
   finance memory recall
   ```
+
+---
+
+## 11. Market Evaluation & Review Cadence
+
+### What it is & How it's used
+A structured framework for evaluating broad market conditions, industry sentiment, and stock/ETF fundamentals, paired with a disciplined review cadence.
+
+### Review Cadence
+1. **Daily (Morning Briefing):** Run `finance report` and `finance news` to check FRED macro indicators (yields, inflation), broad RSS news sentiment, and pre-market catalysts.
+2. **Weekly (Portfolio & Risk Audit):** Audit position concentration (single stocks $\le 25\%$, index ETFs $\le 90\%$), check upcoming earnings calendar dates for 5-day blackout windows, and inspect insider transaction trends.
+3. **Monthly (Rebalance & Cash Deployment):** Run `finance optimize` and deploy monthly cash contributions ($500–$1,000) via dollar-cost averaging into diversified index ETFs (e.g., SCHD) or approved growth positions post-earnings.
+4. **Quarterly (Deep Fundamentals & Quant Review):** Re-evaluate financial statements, valuation metrics (P/E, forward P/E, PEG), and backtest trading strategies.
