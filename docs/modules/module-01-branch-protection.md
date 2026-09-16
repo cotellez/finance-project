@@ -69,7 +69,10 @@ Strict branch protection can become a liability during a catastrophic production
 - [x] **Step 1:** Audit CI workflow triggers and add stable `ci-gate` aggregator job in `.github/workflows/ci.yml`.
 - [x] **Step 2:** Create `.github/CODEOWNERS` mapping critical paths to domain experts.
 - [x] **Step 3:** Document branch protection, linear history, and merge queue configuration in `docs/ci-branch-protection.md`.
-- [ ] **Step 4:** Apply branch protection rule in GitHub UI or via `gh api` and verify PR blocking (User Action).
+- [x] **Step 4:** Apply branch protection rule in GitHub UI or via `gh api` and verify PR blocking (User Action).
+  - Resolved GitHub Free paywall: protection unenforced on private repos.
+    Repo flipped private → public so the `main` rule enforces on Free.
+    Commits `a38624d` (ci.yml) + Module 1 docs pushed on `ci-showcase`; `main` untouched.
 
 ---
 
@@ -85,3 +88,8 @@ Strict branch protection can become a liability during a catastrophic production
   - Matrix jobs (`fast (py 3.12)`, `fast (py 3.13)`) generate dynamic names which are tedious to pin individually in branch protection. Solved by introducing the `ci-gate` aggregator job that depends on all matrix/slow/docker/flake jobs and acts as the single required status check.
 * **Key Learnings:**
   - Governance must precede performance optimizations. Protecting `main` ensures no broken code enters production even as build speed increases. Staff-level engineering requires thinking beyond UI clicks to automated policy enforcement (IaC/API) and operational safety valves (break-glass).
+* **Enforcement confirmed (2026-09-16):** single `main-protection` ruleset, 5 rules
+  (restrict deletions, require PR + approvals/code-owners/dismiss-stale,
+  require `ci-gate` status checks + up-to-date, require linear history,
+  block force pushes), targeting 1 branch (`main`). Duplicate ruleset removed;
+  `main-protection` dropped as a target pattern (ruleset name ≠ branch).

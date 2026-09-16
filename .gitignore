@@ -10,6 +10,8 @@ finance.json
 # Runtime data / caches
 market_cache.db
 *.db
+*.db-shm
+*.db-wal
 memory_short.json
 memory_long.json
 portfolio.json
