@@ -1,0 +1,22 @@
+# CODEOWNERS — Module 1, Step 2: who approves what
+#
+# Why this file exists (the narrative):
+# Friday 4:55pm outage happened because anyone could merge anything.
+# Step 1 (branch protection) locks the door. This file decides WHO holds the key.
+# Require review from Code Owners in branch protection so these rules enforce.
+#
+# Format: <path-pattern> <owner-handles...>
+# Replace @cotellez with your GitHub username / team handle.
+
+* @cotellez
+
+# Critical paths — risk, valuation, and portfolio math need owner review
+/src/finance/risk_guardrails.py @cotellez
+/src/finance/valuation.py @cotellez
+/src/finance/portfolio.py @cotellez
+/src/finance/backtest.py @cotellez
+
+# CI / infra changes need owner review (prevents bypassing gates)
+/.github/ @cotellez
+Dockerfile @cotellez
+pyproject.toml @cotellez
