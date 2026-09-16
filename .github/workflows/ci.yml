@@ -1,5 +1,11 @@
 name: CI
 
+# Module 1: governance triggers.
+# - push to main: validates direct merges (should be blocked by protection;
+#   this run proves the gate works if it ever fires).
+# - pull_request to main: the PR gate branch protection requires.
+# - merge_group: merge-queue batch validation (Time-of-Check vs Time-of-Use fix).
+# - workflow_dispatch: manual incident re-run without a code push.
 on:
   push:
     branches: [main]
@@ -12,6 +18,13 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Module 1, Step 1 + 4: least-privilege credential hygiene.
+# Top-level read-only; no job gets write access unless it explicitly needs it
+# (e.g. a future flake-bot job opening issues would get issues: write).
+# This is the OIDC-safe default: no long-lived secrets, no broad tokens.
+permissions:
+  contents: read
+
 env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
@@ -19,6 +32,9 @@ jobs:
   fast:
     name: fast (py ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -65,7 +81,10 @@ jobs:
   slow:
     name: slow / network-shaped (py 3.12)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: fast
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -120,8 +139,11 @@ jobs:
   flake-report:
     name: flake-report
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: [fast, slow]
     if: always()
+    permissions:
+      contents: read
     steps:
       - name: Download results
         uses: actions/download-artifact@v4
@@ -150,7 +172,10 @@ jobs:
   docker:
     name: docker build + smoke
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: fast
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -159,3 +184,30 @@ jobs:
 
       - name: Smoke test CLI
         run: docker run --rm finance:ci --help
+
+  # Module 1, Step 1: single stable required status check.
+  # Why: matrix jobs produce dynamic names ("fast (py 3.12)", "fast (py 3.13)")
+  # that are painful to pin in branch protection + merge queue rules.
+  # Require THIS job ("CI gate / ci-gate") in branch protection instead.
+  # It stays red if any upstream job fails, skipped, or is cancelled.
+  ci-gate:
+    name: ci-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [fast, slow, docker, flake-report]
+    if: always()
+    permissions:
+      contents: read
+    steps:
+      - name: Check upstream results
+        run: |
+          echo "fast=${{ needs.fast.result }} slow=${{ needs.slow.result }} docker=${{ needs.docker.result }} flake=${{ needs.flake-report.result }}"
+          for r in "${{ needs.fast.result }}" "${{ needs.slow.result }}" "${{ needs.docker.result }}" "${{ needs.flake-report.result }}"; do
+            # slow may be skipped when no relevant files changed (success/skip allowed);
+            # anything failed or cancelled blocks the gate.
+            case "$r" in
+              success|skipped) ;;
+              *) echo "CI gate blocked by upstream result: $r"; exit 1 ;;
+            esac
+          done
+          echo "CI gate passed."
