@@ -61,22 +61,52 @@ jobs:
       - name: Install package
         run: pip install -e .[dev]
 
+      - name: Validate quarantine manifest
+        run: |
+          python - <<'EOF'
+          import json
+          import subprocess
+          with open('tests/quarantine.json', encoding='utf-8') as f:
+              entries = json.load(f).get('quarantined', [])
+          ids = [entry if isinstance(entry, str) else entry['id'] for entry in entries]
+          collected = subprocess.run(
+              ['python', '-m', 'pytest', '--collect-only', '-q'],
+              check=True,
+              text=True,
+              stdout=subprocess.PIPE,
+          ).stdout.splitlines()
+          collected = {line.strip() for line in collected if '::' in line}
+          missing = [node_id for node_id in ids if node_id not in collected]
+          if missing:
+              raise SystemExit(f'quarantine entries match no collected tests: {missing}')
+          print(f'quarantine manifest valid: {len(ids)} entries')
+          EOF
+
       - name: Run fast unit tests
-        run: >
+        run: |
+          # Module 3, Step 2: stable tiers exclude quarantined tests.
+          # Manifest is data (tests/quarantine.json); empty list = zero
+          # extra args = today's behavior unchanged.
+          python -c "import json; [print(entry if isinstance(entry, str) else entry['id']) for entry in json.load(open('tests/quarantine.json')).get('quarantined', [])]" > /tmp/quarantine.txt
+          DESELECT=()
+          while IFS= read -r line; do
+            [ -n "$line" ] && DESELECT+=(--deselect "$line")
+          done < /tmp/quarantine.txt
           python -m pytest
-          tests/test_cli.py
-          tests/test_valuation.py
-          tests/test_sentiment.py
-          tests/test_bias_guard.py
-          tests/test_memory.py
-          tests/test_memory_mcp.py
-          tests/test_news_cli.py
-          tests/test_newsfeed.py
-          tests/test_watchlist.py
-          tests/test_wrapup.py
-          tests/test_pdf2md.py
-          tests/test_risk_guardrails.py
-          -q --junitxml=junit-fast.xml --durations=20
+            tests/test_cli.py
+            tests/test_valuation.py
+            tests/test_sentiment.py
+            tests/test_bias_guard.py
+            tests/test_memory.py
+            tests/test_memory_mcp.py
+            tests/test_news_cli.py
+            tests/test_newsfeed.py
+            tests/test_watchlist.py
+            tests/test_wrapup.py
+            tests/test_pdf2md.py
+            tests/test_risk_guardrails.py
+            tests/test_quarantine_manifest.py
+            -q --junitxml=junit-fast.xml --durations=20 "${DESELECT[@]}"
 
       - name: Upload fast results
         if: always()
@@ -84,6 +114,7 @@ jobs:
         with:
           name: junit-fast-py${{ matrix.python-version }}
           path: junit-fast.xml
+          retention-days: 7
 
   slow:
     name: slow / network-shaped (py 3.12)
@@ -133,17 +164,24 @@ jobs:
       # All tests here are mocked/offline by design (see AGENTS.md),
       # but they exercise the heavy quant / market / broker paths,
       # so they run as the second tier behind fast unit tests.
+      # Module 3, Step 2: same quarantine deselect as the fast tier.
+      # Manifest validity is enforced by the fast tier's blocking check.
       - name: Run slow tests
         if: steps.changes.outputs.run == 'true'
-        run: >
+        run: |
+          python -c "import json; [print(entry if isinstance(entry, str) else entry['id']) for entry in json.load(open('tests/quarantine.json')).get('quarantined', [])]" > /tmp/quarantine.txt
+          DESELECT=()
+          while IFS= read -r line; do
+            [ -n "$line" ] && DESELECT+=(--deselect "$line")
+          done < /tmp/quarantine.txt
           python -m pytest
-          tests/test_market.py
-          tests/test_fred.py
-          tests/test_stock_data.py
-          tests/test_advanced.py
-          tests/test_advanced_quant.py
-          tests/test_paper_trading.py
-          -q --junitxml=junit-slow.xml --durations=20
+            tests/test_market.py
+            tests/test_fred.py
+            tests/test_stock_data.py
+            tests/test_advanced.py
+            tests/test_advanced_quant.py
+            tests/test_paper_trading.py
+            -q --junitxml=junit-slow.xml --durations=20 "${DESELECT[@]}"
 
       - name: Upload slow results
         if: always()
@@ -152,6 +190,7 @@ jobs:
           name: junit-slow
           path: junit-slow.xml
           if-no-files-found: ignore
+          retention-days: 7
 
   flake-report:
     name: flake-report
@@ -162,6 +201,8 @@ jobs:
     permissions:
       contents: read
     steps:
+      # Module 3, Step 4: pattern junit-* also picks up junit-quarantine.xml,
+      # so quarantined results flow into the summary with zero extra wiring.
       - name: Download results
         uses: actions/download-artifact@v4
         with:
@@ -202,6 +243,58 @@ jobs:
       - name: Smoke test CLI
         run: docker run --rm finance:ci --help
 
+  # Module 3, Step 3: non-blocking quarantine tier (informational signal).
+  # Runs ONLY manifest-listed tests. continue-on-error + ci-gate exclusion
+  # convert "red = blocked fleet" into "red = fix this test".
+  # Empty manifest = green no-op (today's state: zero known flakes).
+  quarantine:
+    name: quarantine (informational)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: fast
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        id: setup
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Report pip cache status
+        run: echo "pip cache-hit=${{ steps.setup.outputs.cache-hit }} (py 3.12, quarantine tier)"
+
+      - name: Install package
+        run: pip install -e .[dev]
+
+      - name: Run quarantined tests
+        run: |
+          python -c "import json; [print(entry if isinstance(entry, str) else entry['id']) for entry in json.load(open('tests/quarantine.json')).get('quarantined', [])]" > /tmp/quarantine.txt
+          QUARANTINED=()
+          while IFS= read -r line; do
+            [ -n "$line" ] && QUARANTINED+=("$line")
+          done < /tmp/quarantine.txt
+          if [ "${#QUARANTINED[@]}" = "0" ]; then
+            echo "No quarantined tests — green no-op."
+            exit 0
+          fi
+          python -m pytest "${QUARANTINED[@]}" \
+            -q --junitxml=junit-quarantine.xml --durations=20
+
+      - name: Upload quarantine results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-quarantine
+          path: junit-quarantine.xml
+          if-no-files-found: ignore
+          retention-days: 7
+
   # Module 1, Step 1: single stable required status check.
   # Why: matrix jobs produce dynamic names ("fast (py 3.12)", "fast (py 3.13)")
   # that are painful to pin in branch protection + merge queue rules.
@@ -211,16 +304,17 @@ jobs:
     name: ci-gate
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [fast, slow, docker, flake-report]
+    needs: [fast, slow, docker, flake-report, quarantine]
     if: always()
     permissions:
       contents: read
     steps:
       - name: Check upstream results
         run: |
-          echo "fast=${{ needs.fast.result }} slow=${{ needs.slow.result }} docker=${{ needs.docker.result }} flake=${{ needs.flake-report.result }}"
+          echo "fast=${{ needs.fast.result }} slow=${{ needs.slow.result }} docker=${{ needs.docker.result }} flake=${{ needs.flake-report.result }} quarantine=${{ needs.quarantine.result }}(informational)"
           for r in "${{ needs.fast.result }}" "${{ needs.slow.result }}" "${{ needs.docker.result }}" "${{ needs.flake-report.result }}"; do
             # slow may be skipped when no relevant files changed (success/skip allowed);
+            # quarantine is informational by design (continue-on-error) and never blocks;
             # anything failed or cancelled blocks the gate.
             case "$r" in
               success|skipped) ;;
