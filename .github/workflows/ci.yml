@@ -45,11 +45,18 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Python
+        id: setup
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: pyproject.toml
+
+      # Module 2, enterprise gap fix: cache-hit observability.
+      # setup-python hides hit/miss; without this line you cannot prove the
+      # 3–5 min setup saving or diagnose a poisoned cache at scale.
+      - name: Report pip cache status
+        run: echo "pip cache-hit=${{ steps.setup.outputs.cache-hit }} (py ${{ matrix.python-version }})"
 
       - name: Install package
         run: pip install -e .[dev]
@@ -93,7 +100,12 @@ jobs:
       - name: Detect relevant changes
         id: changes
         run: |
-          if [ "${{ github.event_name }}" != "pull_request" ]; then
+          # merge_group (merge-queue batches) must ALWAYS run the slow tier:
+          # batch validation is the Time-of-Check vs Time-of-Use fix from
+          # Module 1 — a skipped tier here would let ci-gate pass unvalidated.
+          if [ "${{ github.event_name }}" = "merge_group" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" != "pull_request" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           elif git diff --name-only "origin/${{ github.base_ref }}"...HEAD | grep -Eq '^(src/|tests/|pyproject.toml|.github/)'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
@@ -102,12 +114,17 @@ jobs:
           fi
 
       - name: Set up Python
+        id: setup
         if: steps.changes.outputs.run == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: pyproject.toml
+
+      - name: Report pip cache status
+        if: steps.changes.outputs.run == 'true'
+        run: echo "pip cache-hit=${{ steps.setup.outputs.cache-hit }} (py 3.12, slow tier)"
 
       - name: Install package
         if: steps.changes.outputs.run == 'true'
