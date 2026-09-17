@@ -19,3 +19,24 @@ Track the US Stock Market (S&P 500 & Dow Jones) and individual stocks, perform t
 - **Portfolio Tracker & Optimizer (`portfolio.py`):** Tracks holdings, cost basis, performance, and risk metrics using modern portfolio theory.
 - **Sandbox Predictions (`watchlist.py`):** Training-only winner/loser predictions benchmarked against SPY and current prices. Strictly firewalled from all core modules.
 - **CLI Interface (`cli.py`):** Unified command-line utility for market quotes, analysis, portfolio tracking, sandbox predictions, and memory management.
+
+<!-- CI-SHOWCASE ONLY — DO NOT MERGE TO MAIN -->
+## CI Showcase Training (ci-showcase branch only — never merge to main)
+Training track for large-scale CI/CD and Developer Productivity engineering.
+Source of truth: `docs/modules/` (each module file carries its own narrative,
+steps, progress tracker, and session log) + `training_progress` cognitive
+episodes. Resume protocol and end-of-day check: see `docs/modules/README.md`.
+1. **`main` stays clean:** all training lives on `ci-showcase`. No PRs or merges
+   to `main` without explicit user opt-in. Reject any merge carrying this marker.
+2. **No ledger on training branches:** `finance wrap-up` never runs on
+   `ci-showcase`. `git diff --stat` must NOT list `progress.md` before push.
+3. **Module discipline:** tick the module file's tracker + append session-log
+   lines as work completes; log a `training_progress` episode per milestone.
+4. **Shared working tree:** user and agent shells share one checkout — announce
+   branch switches in chat; verify with `git branch --show-current` before edits.
+5. **Commits from the user's side:** this shell has no `gh`/GitHub auth. Never
+   stage secrets, PII, `.env`, `*.db*`, or quarantine noise; never commit unless
+   explicitly requested.
+6. **Verification bar:** YAML must parse, secrets scan clean, tests green for
+   code changes, least-privilege permissions. Report honest measured metrics —
+   never invent before/after numbers.
