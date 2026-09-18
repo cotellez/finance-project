@@ -228,20 +228,75 @@ jobs:
           EOF
 
   docker:
-    name: docker build + smoke
+    name: docker build + scan + smoke
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     needs: fast
+    # actions: write is scoped to this job only: docker/build-push-action
+    # persists layer cache via the GHA cache API, which needs cache write.
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Module 4, Step 2: GHA layer cache (closes the Module 2
+      # docker-cache tech-debt item). Unchanged layers restore from
+      # cache instead of rebuilding on every PR.
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: finance:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Report image size
+        run: docker images finance:ci --format 'image finance:ci size={{.Size}}'
+
+      - name: Smoke test CLI
+        run: docker run --rm finance:ci --help
+
+      # Module 4, Step 3 (researcher finding #5, full-hardening scope):
+      # blocking scan. ignore-unfixed keeps the gate to fixable CVEs so
+      # unpatchable upstream noise cannot hold merges hostage.
+      - name: Scan image
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: finance:ci
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+
+  # Module 4, Step 4: K8s manifest validation (training-only manifests in
+  # k8s/ are validated, never applied). Job-shape, not Deployment: an
+  # exit-0 CLI under a Deployment would CrashLoop (researcher finding #1).
+  k8s-validate:
+    name: k8s manifest validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build image
-        run: docker build -t finance:ci .
+      - name: Install kubeconform
+        run: |
+          # Resolved at runtime; record the version in module-04 baselines,
+          # then pin after the first green run.
+          TAG=$(python -c "import json,urllib.request; print(json.load(urllib.request.urlopen('https://api.github.com/repos/yannh/kubeconform/releases/latest'))['tag_name'])")
+          echo "kubeconform $TAG"
+          curl -sSL -o /tmp/kubeconform.tar.gz "https://github.com/yannh/kubeconform/releases/download/${TAG}/kubeconform-linux-amd64.tar.gz"
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
+          /tmp/kubeconform -version
 
-      - name: Smoke test CLI
-        run: docker run --rm finance:ci --help
+      - name: Validate manifests
+        run: /tmp/kubeconform -strict -summary k8s/
 
   # Module 3, Step 3: non-blocking quarantine tier (informational signal).
   # Runs ONLY manifest-listed tests. continue-on-error + ci-gate exclusion
@@ -304,15 +359,15 @@ jobs:
     name: ci-gate
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [fast, slow, docker, flake-report, quarantine]
+    needs: [fast, slow, docker, flake-report, quarantine, k8s-validate]
     if: always()
     permissions:
       contents: read
     steps:
       - name: Check upstream results
         run: |
-          echo "fast=${{ needs.fast.result }} slow=${{ needs.slow.result }} docker=${{ needs.docker.result }} flake=${{ needs.flake-report.result }} quarantine=${{ needs.quarantine.result }}(informational)"
-          for r in "${{ needs.fast.result }}" "${{ needs.slow.result }}" "${{ needs.docker.result }}" "${{ needs.flake-report.result }}"; do
+          echo "fast=${{ needs.fast.result }} slow=${{ needs.slow.result }} docker=${{ needs.docker.result }} flake=${{ needs.flake-report.result }} quarantine=${{ needs.quarantine.result }}(informational) k8s=${{ needs.k8s-validate.result }}"
+          for r in "${{ needs.fast.result }}" "${{ needs.slow.result }}" "${{ needs.docker.result }}" "${{ needs.flake-report.result }}" "${{ needs.k8s-validate.result }}"; do
             # slow may be skipped when no relevant files changed (success/skip allowed);
             # quarantine is informational by design (continue-on-error) and never blocks;
             # anything failed or cancelled blocks the gate.

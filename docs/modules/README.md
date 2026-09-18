@@ -10,8 +10,12 @@ justification, progress tracker, and session log — no chat scrolling required.
   CODEOWNERS, linear history, `ci-gate`, merge queues. Status: enforced.
 - `module-02-feedback-loops.md` — pipeline speed: pip caching, matrix builds,
   two-tier test split, benchmarks. Status: complete, CI wall-times pending.
-- `module-03-flake-quarantine.md` — (planned) flake detection + quarantine.
-- `module-04-containers-k8s.md` — (planned) Docker + Kubernetes CI jobs.
+- `module-03-flake-quarantine.md` — flake detection + quarantine tiers,
+  manifest validation, CODEOWNERS escape-hatch guard. Status: Phase A
+  complete (commit `94bb5be`).
+- `module-04-containers-k8s.md` — hardened image (pinned digest, non-root),
+  GHA layer cache, blocking Trivy, CronJob sample + kubeconform validation.
+  Status: implemented, CI baselines pending.
 - `module-05-developer-cli.md` — (planned) developer-facing CLI tooling.
 - `module-06-merge-queues.md` — (planned) merge queues at scale.
 
@@ -20,6 +24,14 @@ A new session restores context with three reads, in order:
 1. Latest `training_progress` cognitive-memory episode.
 2. Unfinished checkboxes in `docs/modules/module-*.md` trackers.
 3. `git log --oneline -5` on `ci-showcase`.
+
+## Module workflow (standing SOP)
+Every module follows: resume protocol → draft initial plan → `researcher`
+enterprise gap audit (standing user-authorized trigger after each initial
+plan; researcher reports findings only, never implements) → main agent
+orchestrates findings into Phase A/B/C and seeks scope approval → implement
+the approved phase → verify, update tracker/session log, record a
+`training_progress` episode. Commit/push only on explicit request.
 
 ## End-of-day check ("are the logs current?")
 Before closing a training day, verify:

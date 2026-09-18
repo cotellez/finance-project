@@ -1,0 +1,45 @@
+# TRAINING-ONLY sample manifest — validated by `k8s-validate` in CI, never
+# applied to a real cluster in this module. Workload shape is deliberate:
+# `finance` is an exit-0 CLI, so a Kubernetes Deployment would CrashLoop
+# (Module 4 researcher finding #1). Batch CLI execution belongs in a
+# Job/CronJob, where process exit is the expected terminal state.
+#
+# Workload: weeknight market-briefing report (`finance report`).
+# Image `finance:ci` is the locally-built CI tag; there is no registry push
+# at this scale, so this manifest pins `imagePullPolicy: IfNotPresent` and
+# must be re-pointed at a registry digest before any real deployment.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: finance-report
+  labels:
+    app.kubernetes.io/name: finance
+    app.kubernetes.io/component: report
+spec:
+  # Weeknights after US market close (UTC).
+  schedule: "0 22 * * 1-5"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: finance
+            app.kubernetes.io/component: report
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: report
+              image: finance:ci
+              imagePullPolicy: IfNotPresent
+              args: ["report"]
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  cpu: "1"
+                  memory: 1Gi

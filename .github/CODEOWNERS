@@ -20,6 +20,7 @@
 /.github/ @cotellez
 Dockerfile @cotellez
 pyproject.toml @cotellez
+/k8s/ @cotellez
 
 # Quarantine manifest is a merge-gate escape hatch: adding a test here unblocks PRs.
 # Changes require owner review so flakes are quarantined deliberately, not to dodge red CI.
