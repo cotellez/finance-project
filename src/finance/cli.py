@@ -37,6 +37,9 @@ from finance.backtest import backtest_sma_crossover
 from finance.screener import score_stocks
 from finance.reports import generate_market_briefing
 from finance.watchlist import load_watchlist, add_prediction, evaluate_watchlist
+from finance.tax_lots import load_tax_lots, add_tax_lot, realize_tax_lots
+from finance.dividends import analyze_portfolio_dividends
+from finance.rebalance import calculate_portfolio_drift, generate_rebalance_orders
 import pandas as pd
 
 DEFAULT_DB = PROJECT_ROOT / "finance.json"
@@ -460,6 +463,173 @@ def handle_portfolio_analyze(args) -> int:
         return 0
     except Exception as e:
         print(f"Error analyzing portfolio: {e}", file=sys.stderr)
+        return 1
+
+
+def handle_portfolio_tax_lots(args) -> int:
+    try:
+        lots = load_tax_lots()
+        if getattr(args, "symbol", None):
+            lots = [l for l in lots if l["symbol"].upper() == args.symbol.upper()]
+        if not lots:
+            print("No open tax lots recorded.")
+            return 0
+        print(f"{'Symbol':<8} | {'Shares':<10} | {'Purchase Price':<15} | {'Date':<12} | {'Fees':<6}")
+        print("-" * 60)
+        for l in lots:
+            print(f"{l['symbol']:<8} | {l['shares']:<10.4f} | ${l['purchase_price']:<14.2f} | {l['purchase_date']:<12} | ${l.get('fees', 0.0):.2f}")
+        push_context("Listed portfolio tax lots")
+        return 0
+    except Exception as e:
+        print(f"Error listing tax lots: {e}", file=sys.stderr)
+        return 1
+
+
+def handle_portfolio_tax_lot_add(args) -> int:
+    try:
+        lot = add_tax_lot(
+            symbol=args.symbol,
+            shares=args.shares,
+            purchase_price=args.price,
+            purchase_date=args.date,
+            fees=args.fees or 0.0,
+        )
+        print(f"Recorded tax lot: {lot['symbol']} | {lot['shares']} sh @ ${lot['purchase_price']:.2f} on {lot['purchase_date']}")
+        push_context(f"Recorded tax lot for {lot['symbol']}")
+        return 0
+    except Exception as e:
+        print(f"Error recording tax lot: {e}", file=sys.stderr)
+        return 1
+
+
+def handle_portfolio_realize(args) -> int:
+    try:
+        res = realize_tax_lots(
+            symbol=args.symbol,
+            shares_sold=args.shares,
+            sale_price=args.price,
+            sale_date=args.date,
+            method=args.method.upper(),
+        )
+        print("=== Realized Tax Lots & Capital Gains ===")
+        print(f"Symbol:             {res['symbol']}")
+        print(f"Shares Sold:        {res['shares_sold']}")
+        print(f"Sale Price:         ${res['sale_price']:.2f}")
+        print(f"Method:             {res['method']}")
+        print(f"Total Proceeds:     ${res['total_proceeds']:,.2f}")
+        print(f"Total Cost Basis:   ${res['total_cost_basis']:,.2f}")
+        gain_sign = "+" if res['realized_gain_loss'] >= 0 else ""
+        print(f"Realized Gain/Loss: {gain_sign}${res['realized_gain_loss']:,.2f}")
+        print("\nAffected Lots:")
+        for lot in res["lots_affected"]:
+            l_sign = "+" if lot['gain_loss'] >= 0 else ""
+            print(f"  {lot['shares_realized']} sh from {lot['purchase_date']} @ ${lot['purchase_price']:.2f} -> {l_sign}${lot['gain_loss']:.2f}")
+        push_context(f"Realized {res['shares_sold']} shares of {res['symbol']} ({res['method']})")
+        return 0
+    except Exception as e:
+        print(f"Error realizing tax lots: {e}", file=sys.stderr)
+        return 1
+
+
+def handle_portfolio_dividends(args) -> int:
+    try:
+        data = analyze_portfolio_dividends()
+        if not data["holdings"]:
+            print("No portfolio positions recorded yet.")
+            return 0
+        print("=" * 80)
+        print("  PORTFOLIO DIVIDEND & CASH FLOW SCHEDULE")
+        print("=" * 80)
+        print(f"  {'Symbol':<8} {'Shares':>8} {'Rate':>8} {'Annual Inc':>12} {'Cost Yld':>10} {'Cur Yld':>10} {'Ex-Date':<12}")
+        print("  " + "-" * 74)
+        for h in data["holdings"]:
+            print(f"  {h['symbol']:<8} {h['shares']:>8.2f} ${h['dividend_rate']:>7.2f} ${h['annual_income']:>11.2f} {h['yield_on_cost']:>9.2f}% {h['current_yield']:>9.2f}% {h['ex_dividend_date']:<12}")
+        print("  " + "-" * 74)
+        print(f"  {'TOTAL':<8} {'':>8} {'':>8} ${data['total_annual_income']:>11.2f} {data['portfolio_yield_on_cost']:>9.2f}% {data['portfolio_current_yield']:>9.2f}%")
+        print()
+        print(f"  Projected Annual Income:  ${data['total_annual_income']:,.2f}")
+        print(f"  Estimated Monthly Cash:   ${data['monthly_estimated_income']:,.2f}")
+        print(f"  Portfolio Yield on Cost:   {data['portfolio_yield_on_cost']:.2f}%")
+        print(f"  Portfolio Current Yield:   {data['portfolio_current_yield']:.2f}%")
+        push_context("Analyzed portfolio dividend cash flows")
+        return 0
+    except Exception as e:
+        print(f"Error analyzing dividends: {e}", file=sys.stderr)
+        return 1
+
+
+def handle_portfolio_drift(args) -> int:
+    try:
+        positions = load_portfolio()
+        if not positions:
+            print("No portfolio positions recorded yet.")
+            return 0
+        target_weights = {}
+        for item in args.targets:
+            if "=" not in item:
+                raise ValueError(f"Target '{item}' must be in format SYMBOL=WEIGHT (e.g., SCHD=0.50)")
+            sym, w = item.split("=", 1)
+            target_weights[sym.upper().strip()] = float(w)
+        
+        drifts = calculate_portfolio_drift(positions, target_weights)
+        print("=" * 70)
+        print("  PORTFOLIO ALLOCATION DRIFT")
+        print("=" * 70)
+        print(f"  {'Symbol':<8} {'Current Val':>12} {'Current %':>10} {'Target %':>10} {'Drift %':>10}")
+        print("  " + "-" * 56)
+        for d in drifts:
+            drift_sign = "+" if d['drift_pct'] >= 0 else ""
+            print(f"  {d['symbol']:<8} ${d['current_value']:>11.2f} {d['current_weight']:>9.2f}% {d['target_weight']:>9.2f}% {drift_sign}{d['drift_pct']:>9.2f}%")
+        push_context("Analyzed portfolio allocation drift")
+        return 0
+    except Exception as e:
+        print(f"Error computing drift: {e}", file=sys.stderr)
+        return 1
+
+
+def handle_portfolio_rebalance(args) -> int:
+    try:
+        positions = load_portfolio()
+        if not positions:
+            print("No portfolio positions recorded yet.")
+            return 0
+        target_weights = {}
+        for item in args.targets:
+            if "=" not in item:
+                raise ValueError(f"Target '{item}' must be in format SYMBOL=WEIGHT (e.g., SCHD=0.50)")
+            sym, w = item.split("=", 1)
+            target_weights[sym.upper().strip()] = float(w)
+
+        res = generate_rebalance_orders(
+            positions=positions,
+            target_weights=target_weights,
+            available_cash=args.cash or 0.0,
+            max_position_pct=args.max_single or 25.0,
+            max_etf_position_pct=args.max_etf or 90.0,
+        )
+
+        print("=" * 75)
+        print("  PORTFOLIO REBALANCE ORDERS (GUARDRAIL ENFORCED)")
+        print("=" * 75)
+        print(f"  Projected Portfolio Value: ${res['projected_portfolio_value']:,.2f}")
+        print(f"  Available Cash:            ${res['available_cash']:,.2f}")
+        if res["warnings"]:
+            print("\n  Guardrail Warnings / Adjustments:")
+            for w in res["warnings"]:
+                print(f"   * {w}")
+        
+        if not res["orders"]:
+            print("\n  Portfolio is already balanced within tolerances. No trades required.")
+            return 0
+
+        print(f"\n  {'Action':<8} {'Symbol':<8} {'Shares':>8} {'Est Price':>12} {'Est Notional':>14} {'Target %':>10}")
+        print("  " + "-" * 66)
+        for o in res["orders"]:
+            print(f"  {o['action']:<8} {o['symbol']:<8} {o['shares']:>8} ${o['estimated_price']:>11.2f} ${o['estimated_notional']:>13.2f} {o['target_weight_pct']:>9.2f}%")
+        push_context("Generated portfolio rebalance orders")
+        return 0
+    except Exception as e:
+        print(f"Error generating rebalance orders: {e}", file=sys.stderr)
         return 1
 
 
@@ -998,6 +1168,40 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_analyze_parser = portfolio_subparsers.add_parser("analyze", help="Detailed portfolio analysis with beta, yield, and risk metrics")
     p_analyze_parser.set_defaults(func=handle_portfolio_analyze)
+
+    p_tax_parser = portfolio_subparsers.add_parser("tax-lots", help="List open tax lots")
+    p_tax_parser.add_argument("--symbol", help="Optional symbol filter")
+    p_tax_parser.set_defaults(func=handle_portfolio_tax_lots)
+
+    p_tax_add = portfolio_subparsers.add_parser("tax-add", help="Record a purchase tax lot")
+    p_tax_add.add_argument("symbol", help="Stock ticker symbol")
+    p_tax_add.add_argument("shares", type=float, help="Number of shares")
+    p_tax_add.add_argument("price", type=float, help="Purchase price per share")
+    p_tax_add.add_argument("--date", help="Purchase date YYYY-MM-DD")
+    p_tax_add.add_argument("--fees", type=float, default=0.0, help="Fees/commissions")
+    p_tax_add.set_defaults(func=handle_portfolio_tax_lot_add)
+
+    p_tax_realize = portfolio_subparsers.add_parser("realize", help="Realize shares against tax lots (FIFO/LIFO)")
+    p_tax_realize.add_argument("symbol", help="Stock ticker symbol")
+    p_tax_realize.add_argument("shares", type=float, help="Shares sold")
+    p_tax_realize.add_argument("price", type=float, help="Sale price per share")
+    p_tax_realize.add_argument("--method", choices=["FIFO", "LIFO"], default="FIFO", help="Realization method")
+    p_tax_realize.add_argument("--date", help="Sale date YYYY-MM-DD")
+    p_tax_realize.set_defaults(func=handle_portfolio_realize)
+
+    p_div_parser = portfolio_subparsers.add_parser("dividends", help="Analyze forward-looking dividend cash flows")
+    p_div_parser.set_defaults(func=handle_portfolio_dividends)
+
+    p_drift_parser = portfolio_subparsers.add_parser("drift", help="Calculate allocation drift vs target weights")
+    p_drift_parser.add_argument("targets", nargs="+", help="Target weights as SYMBOL=WEIGHT (e.g. SCHD=0.50 NVDA=0.20 NEE=0.15 JPM=0.15)")
+    p_drift_parser.set_defaults(func=handle_portfolio_drift)
+
+    p_reb_parser = portfolio_subparsers.add_parser("rebalance", help="Generate guardrail-compliant rebalance orders")
+    p_reb_parser.add_argument("targets", nargs="+", help="Target weights as SYMBOL=WEIGHT (e.g. SCHD=0.50 NVDA=0.20 NEE=0.15 JPM=0.15)")
+    p_reb_parser.add_argument("--cash", type=float, default=0.0, help="Available cash to deploy")
+    p_reb_parser.add_argument("--max-single", type=float, default=25.0, help="Max single-stock position %")
+    p_reb_parser.add_argument("--max-etf", type=float, default=90.0, help="Max ETF position %")
+    p_reb_parser.set_defaults(func=handle_portfolio_rebalance)
 
     # macro subcommand
     macro_parser = subparsers.add_parser("macro", help="Track US macroeconomic indicators (FRED)")
