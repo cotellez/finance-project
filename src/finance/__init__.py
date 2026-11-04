@@ -66,6 +66,28 @@ _LAZY_IMPORTS = {
     "fetch_financial_news": ("finance.newsfeed", "fetch_financial_news"),
     "score_news_feed": ("finance.newsfeed", "score_news_feed"),
     "detect_catalysts": ("finance.newsfeed", "detect_catalysts"),
+    # sector rotation & market intelligence
+    "rank_sectors": ("finance.sector_rotation", "rank_sectors"),
+    "build_sector_report": ("finance.sector_rotation", "build_sector_report"),
+    "classify_macro_regime": ("finance.sector_rotation", "classify_macro_regime"),
+    # pruning & amnesty
+    "fast_veto_reasons": ("finance.pruner", "fast_veto_reasons"),
+    "fundamental_veto_reasons": ("finance.pruner", "fundamental_veto_reasons"),
+    "evaluate_symbol": ("finance.pruner", "evaluate_symbol"),
+    "evaluate_universe": ("finance.pruner", "evaluate_universe"),
+    "run_amnesty": ("finance.pruner", "run_amnesty"),
+    "run_veto_backtest": ("finance.pruner", "run_veto_backtest"),
+    "load_prune_list": ("finance.pruner", "load_prune_list"),
+    "add_prune": ("finance.pruner", "add_prune"),
+    "graduate_prune": ("finance.pruner", "graduate_prune"),
+    "fetch_ticker_info": ("finance.pruner", "fetch_ticker_info"),
+    # dark-horse hunting
+    "run_hunt": ("finance.hunter", "run_hunt"),
+    "evaluate_candidate": ("finance.hunter", "evaluate_candidate"),
+    "beats_sector_etf": ("finance.hunter", "beats_sector_etf"),
+    "stage_for_paper_trade": ("finance.hunter", "stage_for_paper_trade"),
+    # report ingestion
+    "ingest_file": ("finance.ingest", "ingest_file"),
 }
 
 __all__ = sorted(_LAZY_IMPORTS)
