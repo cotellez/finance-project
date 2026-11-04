@@ -17,6 +17,9 @@ memory_long.json
 portfolio.json
 paper_trading.json
 
+# Daily briefing output (local Task Scheduler run)
+daily_reports/
+
 # Atomic-write temp files, lock files, audit trail
 *.tmp
 *.lock

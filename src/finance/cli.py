@@ -40,6 +40,18 @@ from finance.watchlist import load_watchlist, add_prediction, evaluate_watchlist
 from finance.tax_lots import load_tax_lots, add_tax_lot, realize_tax_lots
 from finance.dividends import analyze_portfolio_dividends
 from finance.rebalance import calculate_portfolio_drift, generate_rebalance_orders
+from finance.sector_rotation import BENCHMARK, build_sector_report
+from finance.pruner import (
+    add_prune,
+    evaluate_symbol,
+    evaluate_universe,
+    graduate_prune,
+    load_prune_list,
+    run_amnesty,
+    run_veto_backtest,
+)
+from finance.hunter import run_hunt, stage_for_paper_trade
+from finance.ingest import ingest_file
 import pandas as pd
 
 DEFAULT_DB = PROJECT_ROOT / "finance.json"
@@ -1115,6 +1127,300 @@ def handle_watchlist_evaluate(args, db_path: Path | None = None) -> int:
     return 0
 
 
+def handle_sector_rotation(args) -> int:
+    try:
+        report = build_sector_report()
+    except Exception as e:
+        print(f"Error building sector report: {e}", file=sys.stderr)
+        return 1
+
+    regime = report["macro_regime"]
+    print("=== Macro Regime ===")
+    print(f"Regime: {regime.get('regime')}")
+    details = regime.get("details") or {}
+    if "yield_curve_2s10s" in details:
+        yc = details["yield_curve_2s10s"]
+        print(f"2s10s spread: {yc['value']:.2f}% ({yc.get('date')})")
+    if "rate_tone" in details:
+        print(f"10Y tone: {details['rate_tone']} | Risk: {details.get('risk_tone')}")
+    if regime.get("note"):
+        print(f"Note: {regime['note']}")
+
+    print()
+    print("=== Sector Rotation (vs SPY) ===")
+    header = (
+        f"{'#':<3} {'ETF':<6} {'Sector':<26} {'RS 1M':>8} {'RS 3M':>8} "
+        f"{'RS 6M':>8} {'Composite':>10} {'Classification':<20}"
+    )
+    print(header)
+    print("-" * len(header))
+
+    def _fmt_pct(v):
+        return f"{v * 100:+.1f}%" if v is not None else "n/a"
+
+    for row in report["sectors"]:
+        rs = row["rs"]
+        print(
+            f"{row['rank']:<3} {row['symbol']:<6} {row['sector']:<26} "
+            f"{_fmt_pct(rs.get('rs_1m')):>8} {_fmt_pct(rs.get('rs_3m')):>8} "
+            f"{_fmt_pct(rs.get('rs_6m')):>8} {_fmt_pct(row['rs_composite']):>10} "
+            f"{row['classification']:<20}"
+        )
+
+    top = report["sectors"][0] if report["sectors"] else None
+    if top:
+        push_context(
+            f"Sector rotation: top {top['symbol']} ({top['classification']}), "
+            f"macro {regime.get('regime')}"
+        )
+    return 0
+
+
+def handle_prune_evaluate(args) -> int:
+    symbols = [s.upper().strip() for s in args.symbols if s.strip()]
+    if not symbols:
+        print("No symbols provided.", file=sys.stderr)
+        return 1
+    try:
+        if len(symbols) > 1:
+            result = evaluate_universe(symbols, record=args.record)
+            rows = result["results"]
+        else:
+            benchmark_df = fetch_daily(BENCHMARK, period="2y")
+            row = evaluate_symbol(symbols[0], benchmark_df=benchmark_df)
+            if args.record and row["pruned"]:
+                add_prune(
+                    row["symbol"], row["fast_reasons"] + row["slow_reasons"]
+                )
+            rows = [row]
+    except Exception as e:
+        print(f"Error evaluating symbols: {e}", file=sys.stderr)
+        return 1
+
+    pruned_count = 0
+    for row in rows:
+        reasons = row["fast_reasons"] + row["slow_reasons"]
+        status = "PRUNED" if row["pruned"] else "clear"
+        flag = f" [{row['flag']}]" if row.get("flag") else ""
+        reason_str = f" -> {', '.join(reasons)}" if reasons else ""
+        print(f"{row['symbol']:<8} {status:<7}{reason_str}{flag}")
+        if row["pruned"]:
+            pruned_count += 1
+            if args.record and len(symbols) == 1:
+                print(f"         recorded to prune list (tier: {row['tier']})")
+    if args.record and len(symbols) > 1:
+        print(f"Recorded {pruned_count} vetoed symbol(s) to prune list.")
+    push_context(f"Prune evaluation: {pruned_count} of {len(rows)} vetoed")
+    return 0
+
+
+def handle_prune_list(args) -> int:
+    try:
+        data = load_prune_list()
+    except Exception as e:
+        print(f"Error loading prune list: {e}", file=sys.stderr)
+        return 1
+    pruned = data.get("pruned", {})
+    if not pruned:
+        print("Prune list is empty - no mathematically vetoed symbols.")
+        return 0
+    header = f"{'Symbol':<8} {'Tier':<6} {'Pruned At':<20} {'Reasons'}"
+    print(header)
+    print("-" * len(header))
+    for symbol, entry in sorted(pruned.items()):
+        pruned_at = str(entry.get("pruned_at", "?"))[:19]
+        print(
+            f"{symbol:<8} {entry.get('tier', '?'):<6} {pruned_at:<20} "
+            f"{', '.join(entry.get('reasons', []))}"
+        )
+    push_context(f"Prune list: {len(pruned)} symbol(s)")
+    return 0
+
+
+def handle_prune_audit(args) -> int:
+    try:
+        result = run_amnesty(mode=args.mode)
+    except Exception as e:
+        print(f"Error running amnesty audit: {e}", file=sys.stderr)
+        return 1
+    print(f"=== Prune Amnesty ({result['mode']}) ===")
+    print(f"Reviewed: {result['reviewed']}")
+    cleared = ", ".join(result["cleared"]) or "none"
+    print(f"Cleared (graduated): {len(result['cleared'])} -> {cleared}")
+    print(f"Still pruned: {len(result['still_pruned'])}")
+    for item in result["still_pruned"]:
+        note = f" [{item['note']}]" if item.get("note") else ""
+        print(f"  {item['symbol']}: {', '.join(item['reasons'])}{note}")
+    if result["errors"]:
+        print(f"Errors: {len(result['errors'])}")
+        for err in result["errors"]:
+            print(f"  {err['symbol']}: {err['error']}")
+    push_context(
+        f"Prune amnesty {args.mode}: cleared {len(result['cleared'])}, "
+        f"still pruned {len(result['still_pruned'])}"
+    )
+    return 0
+
+
+def handle_prune_graduate(args) -> int:
+    try:
+        removed = graduate_prune(args.symbol, note=args.note)
+    except Exception as e:
+        print(f"Error graduating symbol: {e}", file=sys.stderr)
+        return 1
+    if removed:
+        symbol = args.symbol.upper().strip()
+        print(f"Graduated {symbol} from prune list - eligible for research again.")
+        push_context(f"Prune amnesty: {symbol} graduated")
+        return 0
+    print(f"{args.symbol.upper().strip()} is not on the prune list.")
+    return 0
+
+
+def handle_prune_backtest(args) -> int:
+    try:
+        result = run_veto_backtest(symbols=args.symbols or None)
+    except Exception as e:
+        print(f"Error running veto backtest: {e}", file=sys.stderr)
+        return 1
+    print("=== Fast-Veto Backtest (false-negative audit) ===")
+    print(
+        f"Period: {result['period']} | warmup={result['warmup']} "
+        f"forward={result['forward']} step={result['step']}"
+    )
+    avg_fn = result["avg_false_negative_rate"]
+    print(f"Avg false-negative rate (vetoed but beat SPY): {avg_fn}")
+    for r in result["per_symbol"]:
+        if "error" in r:
+            print(f"  {r['symbol']}: error - {r['error']}")
+        else:
+            print(
+                f"  {r['symbol']:<6} obs={r['observations']:<4} "
+                f"veto_rate={r['veto_rate']} fn_rate={r['false_negative_rate']}"
+            )
+    for r in result["per_symbol"]:
+        if r.get("survivorship_note"):
+            print(f"Note: {r['survivorship_note']}")
+            break
+    push_context(f"Veto backtest: avg false-negative rate {avg_fn}")
+    return 0
+
+
+def handle_hunt(args) -> int:
+    try:
+        result = run_hunt(top_n=args.top_sectors, size=args.size)
+    except Exception as e:
+        print(f"Error running dark-horse hunt: {e}", file=sys.stderr)
+        return 1
+
+    print("=== Dark-Horse Hunt ===")
+    sectors = ", ".join(
+        f"{s['symbol']} ({s['classification']})" for s in result["top_sectors"]
+    )
+    print(f"Top sectors: {sectors}")
+    print(
+        f"Candidates screened: {result['candidates_screened']} "
+        f"(after prune filter: {result['candidates_after_prune_filter']})"
+    )
+    print(f"Qualified: {len(result['qualified'])}")
+    for c in result["qualified"]:
+        gate = c["etf_gate"]
+        garp = c["garp"]
+        print(
+            f"  {c['symbol']:<6} signals={','.join(c['signals'])} "
+            f"sector={c['sector']} etf={c['etf']}"
+        )
+        print(
+            f"         sharpe {gate['symbol_sharpe']} vs {gate['etf_sharpe']} | "
+            f"cagr {gate['symbol_cagr']:.1%} vs {gate['etf_cagr']:.1%} | "
+            f"PEG {garp['peg_ratio']}"
+        )
+    print(f"Rejected: {result['rejected_count']}")
+    print(f"Next: {result['next_action']}")
+
+    if args.stage_paper:
+        if not result["qualified"]:
+            print("No qualified candidates to stage.")
+        else:
+            top = result["qualified"][0]
+            price = top["momentum"]["close"]
+            try:
+                ledger = stage_for_paper_trade(
+                    top["symbol"], price, dollars=args.dollars
+                )
+                shares = ledger.get("shares", "?") if isinstance(ledger, dict) else "?"
+                print(
+                    f"Staged {top['symbol']} in paper trading: {shares} sh "
+                    f"@ ${price:.2f} (${args.dollars:.0f} budget)"
+                )
+            except Exception as e:
+                print(f"Paper staging failed: {e}", file=sys.stderr)
+                return 1
+    push_context(
+        f"Hunt: {len(result['qualified'])} qualified from "
+        f"{result['candidates_screened']} screened"
+    )
+    return 0
+
+
+def handle_market_forecast(args) -> int:
+    try:
+        report = build_sector_report()
+        prune_data = load_prune_list()
+        hunt = None if args.no_hunt else run_hunt()
+    except Exception as e:
+        print(f"Error building market forecast: {e}", file=sys.stderr)
+        return 1
+
+    print("=== MARKET FORECAST ===")
+    regime = report["macro_regime"]
+    details = regime.get("details") or {}
+    risk = f" ({details.get('risk_tone')})" if details.get("risk_tone") else ""
+    print(f"Macro: {regime.get('regime')}{risk}")
+    top_sectors = report["sectors"]
+    leaders = ", ".join(
+        f"{r['symbol']} ({r['classification']})" for r in top_sectors[:4]
+    )
+    print(f"Sector leaders: {leaders}")
+    laggards = [r for r in top_sectors if r["classification"] == "Bearish Rotation"]
+    laggard_str = ", ".join(r["symbol"] for r in laggards) or "none"
+    print(f"Bearish rotation: {laggard_str}")
+
+    pruned = prune_data.get("pruned", {})
+    pruned_str = f" - {', '.join(sorted(pruned))}" if pruned else ""
+    print(f"Pruned (hard veto): {len(pruned)} symbols{pruned_str}")
+
+    if hunt:
+        print(f"Dark-horse qualified: {len(hunt['qualified'])}")
+        for c in hunt["qualified"][:3]:
+            print(
+                f"  {c['symbol']} ({c['sector']}) signals={','.join(c['signals'])}"
+            )
+
+    leader = top_sectors[0]["symbol"] if top_sectors else "n/a"
+    push_context(f"Market forecast: macro {regime.get('regime')}, top sector {leader}")
+    return 0
+
+
+def handle_ingest(args) -> int:
+    try:
+        result = ingest_file(args.path)
+    except Exception as e:
+        print(f"Ingest failed: {e}", file=sys.stderr)
+        return 1
+    print(f"Ingested: {result['source']}")
+    print(
+        f"Stored as: {result['stored_as']} "
+        f"({result['chars']} chars, {result['lines']} lines)"
+    )
+    print("Preview:")
+    for line in result["preview"]:
+        print(f"  {line}")
+    print(f"Note: {result['untrusted_input_note']}")
+    push_context(f"Ingested report {Path(result['source']).name}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Finance & US Stock Market Tracking CLI")
     parser.add_argument(
@@ -1290,6 +1596,98 @@ def build_parser() -> argparse.ArgumentParser:
 
     clear_parser = memory_subparsers.add_parser("clear", help="Clear short-term context")
     clear_parser.set_defaults(func=handle_memory_clear)
+
+    # sector-rotation subcommand
+    sr_parser = subparsers.add_parser(
+        "sector-rotation",
+        help="Rank sector ETFs by relative strength vs SPY with macro regime overlay",
+    )
+    sr_parser.set_defaults(func=handle_sector_rotation)
+
+    # hunt subcommand
+    hunt_parser = subparsers.add_parser(
+        "hunt",
+        help="Screen dark-horse candidates gated by sector-ETF outperformance",
+    )
+    hunt_parser.add_argument(
+        "--top-sectors", type=int, default=3,
+        help="How many leading sectors to consider (default 3)",
+    )
+    hunt_parser.add_argument(
+        "--size", type=int, default=50, help="Candidate pool size (default 50)"
+    )
+    hunt_parser.add_argument(
+        "--stage-paper", action="store_true",
+        help="Stage the top qualified candidate in paper trading",
+    )
+    hunt_parser.add_argument(
+        "--dollars", type=float, default=100.0,
+        help="Paper budget when staging (default 100)",
+    )
+    hunt_parser.set_defaults(func=handle_hunt)
+
+    # prune subcommand
+    prune_parser = subparsers.add_parser(
+        "prune",
+        help="Mathematical hard-veto list with tiered amnesty review",
+    )
+    prune_subparsers = prune_parser.add_subparsers(dest="prune_command", required=True)
+
+    pr_eval = prune_subparsers.add_parser(
+        "evaluate", help="Evaluate symbols against veto rules"
+    )
+    pr_eval.add_argument("symbols", nargs="+", help="Ticker symbol(s)")
+    pr_eval.add_argument(
+        "--record", action="store_true",
+        help="Record vetoed symbols to the prune list",
+    )
+    pr_eval.set_defaults(func=handle_prune_evaluate)
+
+    pr_list = prune_subparsers.add_parser("list", help="Show the current prune list")
+    pr_list.set_defaults(func=handle_prune_list)
+
+    pr_audit = prune_subparsers.add_parser(
+        "audit",
+        help="Tiered amnesty review (light = weekly fast signals, deep = monthly fundamentals)",
+    )
+    pr_audit.add_argument(
+        "--mode", choices=["light", "deep"], default="light",
+        help="light = fast signals only; deep = includes fundamentals",
+    )
+    pr_audit.set_defaults(func=handle_prune_audit)
+
+    pr_grad = prune_subparsers.add_parser(
+        "graduate", help="Remove a symbol from the prune list"
+    )
+    pr_grad.add_argument("symbol", help="Ticker symbol")
+    pr_grad.add_argument("--note", default="", help="Reason for graduation")
+    pr_grad.set_defaults(func=handle_prune_graduate)
+
+    pr_bt = prune_subparsers.add_parser(
+        "backtest", help="Backtest fast-veto rules; measure false-negative rate"
+    )
+    pr_bt.add_argument(
+        "--symbols", nargs="*", default=None,
+        help="Symbols to test (default: liquid multi-sector set)",
+    )
+    pr_bt.set_defaults(func=handle_prune_backtest)
+
+    # market-forecast subcommand
+    mf_parser = subparsers.add_parser(
+        "market-forecast",
+        help="Unified market briefing: macro, sectors, pruned list, dark horses",
+    )
+    mf_parser.add_argument(
+        "--no-hunt", action="store_true", help="Skip dark-horse screening (faster)"
+    )
+    mf_parser.set_defaults(func=handle_market_forecast)
+
+    # ingest subcommand
+    ing_parser = subparsers.add_parser(
+        "ingest", help="Ingest an uploaded research report (PDF/MD/TXT)"
+    )
+    ing_parser.add_argument("path", help="Path to the report file")
+    ing_parser.set_defaults(func=handle_ingest)
 
     return parser
 

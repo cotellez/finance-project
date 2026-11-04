@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from finance.cache import cache_response, get_cached_response
 from finance.portfolio import load_portfolio
 
-DIVIDEND_CACHE_TTL_HOURS = 12
+DIVIDEND_CACHE_TTL_HOURS = 24
 
 _EMPTY_DIV_INFO = {
     "dividend_rate": 0.0,
